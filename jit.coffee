@@ -62,7 +62,8 @@
 log = (args...) ->
   if require
     {inspect} = require 'util'
-    console.log args.map((a) -> inspect a, {depth:5, colors:true}).join ' '
+    f = (a) -> if typeof a is 'string' then a else inspect a, {depth:5, colors:true}
+    console.log args.map(f).join ' '
   else
     console.log args...
 
@@ -103,15 +104,46 @@ x, wall: no
 shuttle, shuttle: no
 ###
 
-oppositeDir = (dir) -> dir+2 % 4
+oppositeDir = (dir) -> (dir+2) % 4
 
 pressureOf = (v) -> if v is 'positive' then 1 else -1
 
 abs = (x) -> if x < 0 then -x else x
 
 class Jit
+  # ******** helpers
+
+  get: (x,y) -> @grid["#{x},#{y}"]
+  #regionAt: (slot) -> @regionInSlot[slot.join ',']
+
+  id: -> @nextId++
+  
+  cellAt: (x, y, dir) ->
+    v = @get x, y
+    switch v
+      # Shuttle in this list because there's no guarantee that the shuttle is
+      # still here later. Be careful!
+      when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
+        [x, y]
+      when 'bridge'
+        [x, y, if dir in [UP, DOWN] then 0 else 1]
+      when 'negative', 'positive'
+        [x, y, dir]
+      else
+        null
+
+  cellOpposite: (x, y, dir) ->
+    {dx, dy} = dirs[dir]
+    @cellAt x+dx, y+dy, oppositeDir(dir)
+
+  # ********
+ 
+
   constructor: (@grid, @opts = {}) ->
     @fillMode = @opts.fillMode || 'engines'
+    #@fillMode = 'shuttles'
+
+    throw Error "Invalid fillMode #{@fillMode}" unless @fillMode in ['engines', 'shuttles', 'all']
 
     #console.log @grid
     @extents = util.gridExtents @grid
@@ -132,6 +164,8 @@ class Jit
     # This maps x,y of cells to a list of shuttle/state pairs which we know can
     # go in the grid cell.
     @gridFill = {}
+    # This is a map from x,y to a string key of which shuttles the cell is dependant on
+    @gridKey = {}
 
     # map from grid position -> engine
     @engineGrid = {}
@@ -139,16 +173,17 @@ class Jit
     # map from grid position -> list of shuttles which can occupy that position.
     @shuttleGrid = {}
     
-    # map from "x,y,isTop" to region
-    @regionAtEdge = {}
+    # map from "x,y[,slot]" to region. Slots are directions for engines, [0,1]
+    # for bridges, unused for thinsolid / thinshuttle.
+    @regionInSlot = {}
     # map from x,y -> region which filled through that point.
-    @regionGrid = {}
+    #@regionGrid = {}
 
 
+    @killRegionInSlot = []
+    @genRegionInSlot = []
 
-    @invalidRegions = []
-
-    @unzonedRegions = []
+    @genZoneForRegion = []
 
 
     # set of edges which need a region filled out.
@@ -160,33 +195,27 @@ class Jit
 
     @initialize()
 
-  id: -> @nextId++
-  get: (x,y) -> @grid["#{x},#{y}"]
-  #addDirtyEdge: (x, y, isTop) -> @dirtyEdges["#{x},#{y},#{isTop}"] = {x, y, isTop}
-
-  ###
-  addDirtyEdgesBounding: (x, y, extra) ->
-    for {ex, ey, isTop, dx, dy} in edges when (
-        @get(x+dx,y+dy) in ['nothing', 'thinsolid', 'thinshuttle', 'bridge', extra])
-      @addDirtyEdge x+ex, y+ey, isTop
-  ###
-
   initialize: ->
     # Scan for all engines, shuttles.
     @annotateGrid()
 
-    @fillRegions()
+    log @genRegionInSlot
+
+    @makeRegionInSlot slot while slot = @genRegionInSlot.pop()
+    @genRegionInSlot.length = 0
+
+    #@fillRegions()
 
     for s in @shuttles
       @calcStateForces s, state for state in s.states
     
 
-    log @engines
-    log @shuttles
-    ###
+    log 'engines', @engines
+    log 'shuttles', @shuttles
     log @regions, @regionGrid
+    ###
 
-    log @regionAtEdge
+    log @regionInSlot
     ###
 
   annotateGrid: ->
@@ -200,7 +229,9 @@ class Jit
           engine = {x, y, pressure, regions:[], id}
           @engines.push @engineGrid["#{x},#{y}"] = engine
 
-          #@addDirtyEdgesBounding x, y, 'shuttle' if @fillMode in ['all', 'engines']
+          if @fillMode in ['engines', 'all']
+            for d in [0...4]
+              @genRegionInSlot.push [x,y,d]
 
         when 'shuttle', 'thinshuttle'
           # flood fill the shuttle extents.
@@ -238,6 +269,10 @@ class Jit
                 continue if v2 is 'shuttle' # ignore internal borders
                 s.edge.push {x:x+ex, y:y+ey, isTop, dir}
 
+                if @fillMode in ['shuttles', 'all']
+                  cell = @cellOpposite x, y, dir
+                  @genRegionInSlot.push cell if cell isnt null
+
               true
             else
               false
@@ -248,17 +283,24 @@ class Jit
     k = "#{x},#{y}"
     if !@gridFill[k]
       @gridFill[k] = [s.id, stateid]
+      @gridKey[k] = "#{s.id}"
     else
       list = @gridFill[k]
-      # We already know that the shuttle fills the cell sometimes. No need to
-      # get huffy about it.
-      return for sid, i in list when sid is s.id and list[i+1] is stateid
+      sids = {}
+      for sid, i in list by 2
+        if sid is s.id and list[i+1] is stateid
+          # We already know that the shuttle fills the cell sometimes. No need to
+          # get huffy about it.
+          return
+        sids[sid] = true
+
       list.push s.id
       list.push stateid
+      # This is going to do a lexographic sort, but it doesn't really matter so long as its stable.
+      @gridKey[k] = Object.keys(sids).sort().join ','
 
-    if r = @regionGrid[k]
-      @invalidRegions.push {r, x, y}
-      #@invalidateRegion r, x, y
+    if r = @regionInSlot[k]
+      @killRegionInSlot.push {r, x, y}
 
   addShuttleState: (s, dx, dy) ->
     # successor is the connected state in each direction
@@ -281,8 +323,10 @@ class Jit
     xForce = {}
     yForce = {}
     for {x,y,isTop,dir} in s.edge
-      r = @regionAtEdge["#{x+dx},#{y+dy},#{isTop}"]
-      # If r is missing, we're probably up against a wall or something. No
+      slot = @cellOpposite x, y, dir
+      continue unless slot
+      r = @regionInSlot[slot]
+      # If r is missing, we should be up against a wall or something. No
       # biggie.
       continue unless r
 
@@ -318,6 +362,7 @@ class Jit
 
   ####### REGIONS
 
+  ###
   fillRegions: ->
     # Flood fill all the empty regions in the grid
     for k,v of @grid when !@regionGrid[k]
@@ -333,92 +378,104 @@ class Jit
         continue if !v2? || (v == 'shuttle' and v2 == 'shuttle')
 
         @makeRegionFrom(x+ex, y+ey, isTop)
+  ###
 
-  makeRegionFrom: (x, y, isTop) ->
-    r = @regionAtEdge["#{x},#{y},#{isTop}"]
-    return if r isnt undefined
+  makeRegionInSlot: (slot) ->
+    return null if slot is null
+    r = @regionInSlot[slot]
+    return r if r
+
+    [x0, y0, n0] = slot
+
+    # Does it make sense to have a region here? Maybe this is a pointless optimization...
+    v0 = @get x0, y0
+    if v0 in ['positive', 'negative']
+      {dx, dy} = dirs[n0]
+      return null if !@get(x0+dx, y0+dy)
+
 
     id = "r#{@id()}"
+    key = @gridKey["#{x0},#{y0}"]
+
     
-    console.log "creating region #{id} from #{x}, #{y}, #{isTop}"
+    console.log "creating region #{id} from [#{slot.join ','}] with key #{key}"
     @regions[id] = r =
       engines: []
-      connections: {}
-      size: 0
-      used: yes
+      connections: null
+      size: 0 # Just for debugging.
       appliesPressureTo: []
       id: id
+      key: key
+      used: yes
       zone: null
 
-    @unzonedRegions.push r
-
-    #@dirtyRegions[id] = true
+    @genZoneForRegion.push r
 
     toExplore = []
     visited = {}
+    connections = {}
 
     # We'll hit the same engine multiple times. Using a map to dedup, then
     # we'll copy the engines into the region at the end.
     containedEngines = {}
 
-    hmm = (x, y, isTop) =>
-      ek = "#{x},#{y},#{isTop}"
-      if !visited[ek]
-        throw Error "Overlapping regions at #{ek}" if @regionAtEdge[ek]?.used
+    hmm = (slot) =>
+      return unless slot
+      sk = slot.join ','
+      if !visited[sk]
+        #r2 = @regionInSlot[sk]
+        #if r2 and r2.used
+        #  throw Error "Overlapping regions at #{sk}"
+          
         #console.log 'expanding', r, 'to', x, y, isTop
-        visited[ek] = true
-        toExplore.push {ek,x,y,isTop}
+        visited[sk] = true
+        toExplore.push slot
 
-    hmm x, y, isTop
+    hmm slot
 
-    while n = toExplore.shift()
-      {ek,x,y,isTop} = n
+    while slot = toExplore.pop()
+      [x, y, n] = slot
       #console.log x, y, isTop
 
-      # We need to check for connectivity via the two adjoining grid cells.
-      #
-      # We need:
-      # - x,y of the cell to check
-      # - ox,oy is the opposite edge via that cell for when we're calculating
-      # bridges.
-      # - If we hit a shuttle, we need to know which way the force pushes
-      check = if isTop # Above, below
-        [{x, y:y-1, ox:x, oy:y-1, f:UP}, {x, y, ox:x, oy:y+1, f:DOWN}]
-      else # Left, right
-        [{x:x-1, y, ox:x-1, oy:y, f:LEFT}, {x, y, ox:x+1, oy:y, f:RIGHT}]
+      k = "#{x},#{y}"
+      sk = "#{slot}"
+ 
+      if @gridKey[k] != key
+        r2 = @regionInSlot[sk]
+        if r2?.used
+          # Connect us.
+          connections[r2.id] = r2
+          r2.connections[id] = r
+        else
+          # There *should* be a region here.
+          @genRegionInSlot.push slot
+        continue
 
-      # Don't smear regions up against walls. Its unsightly.
-      for c in check
-        {x,y} = c
-        c.k = "#{x},#{y}"
-        c.v = @grid[c.k]
-      continue if !check[0].v || !check[1].v
+      if @regionInSlot[sk]
+        throw Error "Overlapping regions at #{[x,y,n]}" if r2.key is key
 
-      @regionAtEdge[ek] = r
+      @regionInSlot[sk] = r
+      v = @get x, y
 
-      for {x,y,k,v,ox,oy}, i in check
-        # unnecessary, but dramatically speeds up the churn here.
-        continue if @regionGrid[k]
-
-        switch v
-          when 'bridge'
-            r.size++
-            hmm ox, oy, isTop
-          when 'nothing', 'thinsolid', 'thinshuttle'
-            r.size++
-            hmm x, y, true
-            hmm x, y, false
-            hmm x, y+1, true
-            hmm x+1, y, false
-          when 'positive', 'negative'
-            containedEngines[@engineGrid["#{x},#{y}"].id] = pressureOf v
+      # We need to check for connectivity via all adjoining cells
+      switch v
+        when 'bridge'
+          r.size++
+          if n is 0
+            hmm @cellOpposite x, y, UP
+            hmm @cellOpposite x, y, DOWN
           else
-            continue
-
-        console.log 'm', k
-        @regionGrid[k] = r
+            hmm @cellOpposite x, y, LEFT
+            hmm @cellOpposite x, y, RIGHT
+        when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
+          r.size++
+          hmm @cellOpposite x, y, d for d in [0...4]
+        when 'positive', 'negative'
+          containedEngines[@engineGrid["#{x},#{y}"].id] = pressureOf v
+          hmm @cellOpposite x, y, n
 
     r.engines = containedEngines
+    r.connections = connections
     ###
     for eid, pressure of containedEngines
       eid = eid|0
@@ -429,11 +486,6 @@ class Jit
 
     r
 
-  
-  invalidateRegion: (r, x, y) ->
-    console.error 'invalidate region', r
-    r.used = no
-    #for {s, state} of
     
   ###
   recalcDerivedRegions: ->
@@ -447,7 +499,7 @@ class Jit
     disturbedShuttles = {}
 
     # 1. Update the zones
-    for r in @unzonedRegions when !r.zone?.used
+    for r in @genZoneForRegion when !r.zone?.used
       zone =
         regions: [r]
         engines: {}
@@ -466,7 +518,7 @@ class Jit
 
       log r.zone
 
-    @unzonedRegions.length = 0
+    @genZoneForRegion.length = 0
 
     # 2. Move shuttles
     for id,s of disturbedShuttles
@@ -495,14 +547,17 @@ class Jit
           if flags & 1<<dir
             console.log 'force', force, dir
 
-    # 3. Regenerate regions
+    # 3. Regenerate invalidated regions
     console.log 'invalid regions:', @invalidRegions.length
     for {r, x, y} in @invalidRegions when r.used
       console.log x, y
       r.used = false
 
-
     @invalidRegions.length = 0
+
+    # 4. Recalculate invalidated shuttle forces
+
+
 
 
 
@@ -553,9 +608,10 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
   
-  jit.step()
+  #jit.step()
   log '##########'
   log jit.gridFill
+  log jit.shuttles[0].states
   #jit.step()
 
 
