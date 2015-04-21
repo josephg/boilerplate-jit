@@ -67,6 +67,79 @@ log = (args...) ->
   else
     console.log args...
 
+cellAt = (grid, x, y, dir) ->
+  v = grid["#{x},#{y}"]
+  switch v
+    # Shuttle in this list because there's no guarantee that the shuttle is
+    # still here later. Be careful!
+    when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
+      [x, y]
+    when 'bridge'
+      [x, y, if dir in [UP, DOWN] then 0 else 1]
+    when 'negative', 'positive'
+      [x, y, dir]
+    else
+      null
+
+cellOpposite = (grid, x, y, dir) ->
+  {dx, dy} = dirs[dir]
+  cellAt grid, x+dx, y+dy, oppositeDir(dir)
+
+
+fillRegion = (grid, initialCell, expandFn) ->
+  toExplore = []
+  visited = {}
+
+  hmm = (slot) =>
+    return unless slot
+    sk = slot.join ','
+    if !visited[sk]
+      #console.log 'expanding', r, 'to', x, y, isTop
+      visited[sk] = true
+      toExplore.push slot
+
+  hmm initialCell
+  
+  while slot = toExplore.pop() when expandFn slot, hmm
+    [x, y, n] = slot
+
+    # We need to check for connectivity via all adjoining cells
+    v = grid["#{x},#{y}"]
+    switch v
+      when 'bridge'
+        if n is 0
+          hmm cellOpposite grid, x, y, UP
+          hmm cellOpposite grid, x, y, DOWN
+        else
+          hmm cellOpposite grid, x, y, LEFT
+          hmm cellOpposite grid, x, y, RIGHT
+      when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
+        hmm cellOpposite grid, x, y, d for d in [0...4]
+      when 'positive', 'negative'
+        hmm cellOpposite grid, x, y, n
+
+# Are the shuttles in list A a proper subset of the shuttles in list B? Skips
+# by 2, because reasons.
+isListSubsetOf = (a, b) ->
+  return true if !a
+  return false if !b
+
+  ai = bi = 0
+
+  # We're in a sense looking for a shuttle in list A thats not in list B - then we return false.
+  while ai < a.length
+    while bi < b.length and b[bi] < a[ai]
+      bi += 2
+
+    return false if bi > b.length or b[bi] != a[ai]
+
+    ai += 2
+    bi += 2
+
+  return true
+
+
+
 #log {x:[]}, [1,2,3], "hi there"
 
 {parseXY, fill} = util = require './util'
@@ -110,6 +183,8 @@ pressureOf = (v) -> if v is 'positive' then 1 else -1
 
 abs = (x) -> if x < 0 then -x else x
 
+
+
 class Jit
   # ******** helpers
 
@@ -118,23 +193,8 @@ class Jit
 
   id: -> @nextId++
   
-  cellAt: (x, y, dir) ->
-    v = @get x, y
-    switch v
-      # Shuttle in this list because there's no guarantee that the shuttle is
-      # still here later. Be careful!
-      when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
-        [x, y]
-      when 'bridge'
-        [x, y, if dir in [UP, DOWN] then 0 else 1]
-      when 'negative', 'positive'
-        [x, y, dir]
-      else
-        null
-
-  cellOpposite: (x, y, dir) ->
-    {dx, dy} = dirs[dir]
-    @cellAt x+dx, y+dy, oppositeDir(dir)
+  cellAt: (x, y, dir) -> cellAt @grid, x, y, dir
+  cellOpposite: (x, y, dir) -> cellOpposite @grid, x, y, dir
 
   # ********
  
@@ -157,27 +217,50 @@ class Jit
     @shuttles = []
 
     # The regions are deleted and recreated whenever a shuttle nearby moves in
-    # an unexpected way. Zones are recreated when there's any change to the connectivity graph.
+    # to an unexpected place. Each region has a list of shuttle state
+    # dependancies (preconditions) and an adjacency list.
     @regions = {}
+
+    # Zones are recreated when there's any change to
+    # the connectivity graph.
     @zones = {}
 
+
     # This maps x,y of cells to a list of shuttle/state pairs which we know can
-    # go in the grid cell.
+    # fill the grid cell. Always sorted by shuttle id then state id.
+    # eg: [1,0, 1,2, 1,3]
     @gridFill = {}
-    # This is a map from x,y to a string key of which shuttles the cell is dependant on
+
+    # This is a map from x,y to a string key of which shuttles the cell is
+    # filled by sometimes. Eg "1,2,4"
     @gridKey = {}
+
 
     # map from grid position -> engine
     @engineGrid = {}
 
-    # map from grid position -> list of shuttles which can occupy that position.
+    # map from grid position -> list of shuttles which can occupy that
+    # position. This includes thinshuttle.
+    # [s1, s2, s3]
     @shuttleGrid = {}
     
-    # map from "x,y[,slot]" to region. Slots are directions for engines, [0,1]
-    # for bridges, unused for thinsolid / thinshuttle.
-    @regionInSlot = {}
+
+    # map from "x,y[,slot]" to region or region list. Slots are directions for
+    # engines, [0,1] for bridges, unused for thinsolid / thinshuttle.
+    #
+    # The value is either null (always filled), a region (no shuttles) or a
+    # list. If its a list, this maps from the cross product of all shuttles
+    # which fill the grid cell to the correponding region.
+    @switchInSlot = {}
+
+
+
     # map from x,y -> region which filled through that point.
     #@regionGrid = {}
+
+    # This maps from "x,y,dir" -> pair of regions abutting the edge.
+    # There is an edge between regions whenever they touch.
+    #@edges = {}
 
 
     @killRegionInSlot = []
@@ -199,10 +282,11 @@ class Jit
     # Scan for all engines, shuttles.
     @annotateGrid()
 
-    log @genRegionInSlot
+    @shuttleState = new Int32Array @shuttles.length
 
-    @makeRegionInSlot slot while slot = @genRegionInSlot.pop()
-    @genRegionInSlot.length = 0
+    log 'grs', @genRegionInSlot
+
+    @makeRegion slot, @shuttleState while slot = @genRegionInSlot.pop()
 
     #@fillRegions()
 
@@ -215,7 +299,7 @@ class Jit
     log @regions, @regionGrid
     ###
 
-    log @regionInSlot
+    log @regionInSlotByKey
     ###
 
   annotateGrid: ->
@@ -280,6 +364,7 @@ class Jit
           @addShuttleState s, 0, 0
 
   shuttleFillsCell: (x, y, s, stateid) ->
+    #log 'shuttleFillsCell', x, y, s.id, stateid
     k = "#{x},#{y}"
     if !@gridFill[k]
       @gridFill[k] = [s.id, stateid]
@@ -299,8 +384,9 @@ class Jit
       # This is going to do a lexographic sort, but it doesn't really matter so long as its stable.
       @gridKey[k] = Object.keys(sids).sort().join ','
 
-    if r = @regionInSlot[k]
-      @killRegionInSlot.push {r, x, y}
+    # TODO
+    #if r = @regionInSlotByKey[k]
+    #  @killRegionInSlot.push {r, x, y}
 
   addShuttleState: (s, dx, dy) ->
     # successor is the connected state in each direction
@@ -325,7 +411,8 @@ class Jit
     for {x,y,isTop,dir} in s.edge
       slot = @cellOpposite x, y, dir
       continue unless slot
-      r = @regionInSlot[slot]
+      r = @regionInSlotByKey[slot]
+      throw Error 'sadf' if Array.isArray r
       # If r is missing, we should be up against a wall or something. No
       # biggie.
       continue unless r
@@ -380,102 +467,146 @@ class Jit
         @makeRegionFrom(x+ex, y+ey, isTop)
   ###
 
-  makeRegionInSlot: (slot) ->
-    return null if slot is null
-    r = @regionInSlot[slot]
-    return r if r
-
+  getSwitchInSlot: (slot) ->
     [x0, y0, n0] = slot
+    k0 = "#{x0},#{y0}"
+    key = @gridKey[k0]
 
-    # Does it make sense to have a region here? Maybe this is a pointless optimization...
+    # Early exit if the switch already exists & is current.
+    sw = @switchInSlot[slot]
+    return sw if sw and sw.key is key and !sw.obsolete
+
+    # Don't create stupid switches. (This might be a pointless optimization...)
     v0 = @get x0, y0
+    return unless v0
     if v0 in ['positive', 'negative']
       {dx, dy} = dirs[n0]
       return null if !@get(x0+dx, y0+dy)
 
+    # Now we need to go through all permutations of the shuttles in question
+    # and figure out what the switch switches.
+    sw = {key, regions:null}
+    return @switchInSlot[slot] = sw
+
+  getRegionInSwitch: (list, sw, shuttleStates) ->
+    container = sw.regions
+    if list then for sid in list by 2
+      stateid = shuttleStates[sid]
+      return null if !container
+      container = container[stateid]
+
+    container
+
+  setRegionInSwitch: (list, sw, shuttleStates, r) ->
+    k = 'regions'
+    container = sw
+
+    if list then for sid in list by 2
+      stateid = shuttleStates[sid]
+
+      container[k] ||= []
+      container = container[k]
+      k = stateid
+
+    container[k] = r
+
+
+  makeRegion: (slot0, shuttleStates) ->
+    [x0, y0, n0] = slot0
+    k0 = "#{x0},#{y0}"
+    key0 = @gridKey[k0]
+    list0 = @gridFill[k0]
+
+    sw = @getSwitchInSlot slot0
+    return null unless sw
+    r = @getRegionInSwitch list0, sw, shuttleStates
+    return r if r and !r.killme
 
     id = "r#{@id()}"
-    key = @gridKey["#{x0},#{y0}"]
-
-    
-    console.log "creating region #{id} from [#{slot.join ','}] with key #{key}"
+ 
+    log "creating region #{id} from [#{slot0.join ','}] with key #{key0}", shuttleStates
     @regions[id] = r =
       engines: []
-      connections: null
+      #connections: null
       size: 0 # Just for debugging.
       appliesPressureTo: []
       id: id
-      key: key
-      used: yes
+      key: key0
+      killme: no
       zone: null
 
     @genZoneForRegion.push r
 
-    toExplore = []
-    visited = {}
-    connections = {}
+    # Up connections are connections to switches which have shuttle constraints
+    # we don't have.
+    upConnections = {}
+    # Down connections are connections to regions which have a strict subset of
+    # the constraints we have.
+    downConnections = {}
 
     # We'll hit the same engine multiple times. Using a map to dedup, then
     # we'll copy the engines into the region at the end.
     containedEngines = {}
 
-    hmm = (slot) =>
-      return unless slot
-      sk = slot.join ','
-      if !visited[sk]
-        #r2 = @regionInSlot[sk]
-        #if r2 and r2.used
-        #  throw Error "Overlapping regions at #{sk}"
-          
-        #console.log 'expanding', r, 'to', x, y, isTop
-        visited[sk] = true
-        toExplore.push slot
-
-    hmm slot
-
-    while slot = toExplore.pop()
+    fillRegion @grid, slot0, (slot, hmm) =>
       [x, y, n] = slot
       #console.log x, y, isTop
 
       k = "#{x},#{y}"
       sk = "#{slot}"
  
-      if @gridKey[k] != key
-        r2 = @regionInSlot[sk]
-        if r2?.used
-          # Connect us.
-          connections[r2.id] = r2
-          r2.connections[id] = r
-        else
-          # There *should* be a region here.
-          @genRegionInSlot.push slot
-        continue
+      sw2 = @getSwitchInSlot slot
+      r2 = @getRegionInSwitch list, sw2, shuttleStates
+      list = @gridFill[slot]
 
-      if @regionInSlot[sk]
-        throw Error "Overlapping regions at #{[x,y,n]}" if r2.key is key
-
-      @regionInSlot[sk] = r
-      v = @get x, y
-
-      # We need to check for connectivity via all adjoining cells
-      switch v
-        when 'bridge'
-          r.size++
-          if n is 0
-            hmm @cellOpposite x, y, UP
-            hmm @cellOpposite x, y, DOWN
+      if @gridKey[k] != key0
+        # Connect us.
+        if isListSubsetOf list0, list
+          log 'sw2 looks down to me'
+          # The other region should look down on us.
+          if r2
+            r2.down[id] = r
           else
-            hmm @cellOpposite x, y, LEFT
-            hmm @cellOpposite x, y, RIGHT
-        when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
-          r.size++
-          hmm @cellOpposite x, y, d for d in [0...4]
-        when 'positive', 'negative'
-          containedEngines[@engineGrid["#{x},#{y}"].id] = pressureOf v
-          hmm @cellOpposite x, y, n
+            # Go make it, dagnabbit!
+            @genRegionInSlot.push slot
+        else
+          # They look up to us.
+          log 'sw2 looks up to me'
+
+        if isListSubsetOf list, list0
+          log 'I look down on sw2'
+        else
+          log 'I look up to sw2'
+
+        return no
+
+      if r2
+        throw Error "Overlapping regions at #{[x,y,n]}"
+
+      if list then for sid, i in list by 2
+        stateid = list[i+1]
+        return no if shuttleStates[sid] is stateid
+
+      @setRegionInSwitch list0, sw2, shuttleStates, r
+      r.size++
+      
+      engine = @engineGrid[k]
+      if engine
+        containedEngines[engine.id] = engine.pressure
+
+      return yes
 
     r.engines = containedEngines
-    r.connections = connections
+    #r.connections = connections
+
+    
+    # For regions which have shuttles in them, we have to iterate through all
+    # shuttle states and figure out per-state vector mini region composition
+    # - Force on shuttles (& pushing which direction and how much)
+    # - Connectivity
+
+
+
     ###
     for eid, pressure of containedEngines
       eid = eid|0
