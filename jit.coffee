@@ -59,6 +59,9 @@
 # (regions recalculated)
 # transient regions invalidated
 
+{parseXY, fill} = util = require './util'
+Switch = require './switch'
+
 log = (args...) ->
   if require
     {inspect} = require 'util'
@@ -67,8 +70,31 @@ log = (args...) ->
   else
     console.log args...
 
+UP=0; RIGHT=1; DOWN=2; LEFT=3
+DN =
+  0: 'UP'
+  1: 'RIGHT'
+  2: 'DOWN'
+  3: 'LEFT'
+
+dirs = [
+  {dx:0, dy:-1}
+  {dx:1, dy:0}
+  {dx:0, dy:1}
+  {dx:-1, dy:0}
+]
+
+# up, right, down, left
+edges = [
+  {ex:0,ey:0,isTop:true}
+  {ex:1,ey:0,isTop:false}
+  {ex:0,ey:1,isTop:true}
+  {ex:0,ey:0,isTop:false}
+]
+
 cellAt = (grid, x, y, dir) ->
   v = grid["#{x},#{y}"]
+  #log 'cellat', x, y, DN[dir], v
   switch v
     # Shuttle in this list because there's no guarantee that the shuttle is
     # still here later. Be careful!
@@ -83,8 +109,17 @@ cellAt = (grid, x, y, dir) ->
 
 cellOpposite = (grid, x, y, dir) ->
   {dx, dy} = dirs[dir]
+  #log 'cellOpposite', x, y, DN[dir], x+dx, y+dy
   cellAt grid, x+dx, y+dy, oppositeDir(dir)
 
+# We don't need isTop for this (its redundant with dir) but you should still
+# think of (x,y) as (x,y,isTop).
+# (1,1,true,DOWN) would be (1,1).
+# (1,1,true,UP) would be (1,0).
+cellOppositeEdge = (grid, x, y, dir) ->
+  --x if dir is LEFT
+  --y if dir is UP
+  cellAt grid, x, y, oppositeDir(dir)
 
 fillRegion = (grid, initialCell, expandFn) ->
   toExplore = []
@@ -138,27 +173,34 @@ isListSubsetOf = (a, b) ->
 
   return true
 
+sidsInGridFill = (list) ->
+  return [] unless list
+  sid for sid in list by 2
+
+# Iterate through all states in the sidList, calling fn on each. You can pass
+# shuttleStates in to initialize the process - its an optional argument.
+permuteStates = (shuttles, sidList, shuttleStates, fn) ->
+  if typeof shuttleStates is 'function'
+    fn = shuttleStates
+    shuttleStates = {}
+
+  totalNumber = 1
+  for sid in sidList
+    totalNumber *= shuttles[sid].states.length
+
+  for i in [0...totalNumber]
+    v = i
+    for sid,k in sidList
+      num = shuttles[sid].states.length
+      shuttleStates[sid] = v % num
+      v = (v / num)|0
+
+    #log 'state set', shuttleStates
+    fn shuttleStates
+
+  return
 
 
-#log {x:[]}, [1,2,3], "hi there"
-
-{parseXY, fill} = util = require './util'
-
-UP=0; RIGHT=1; DOWN=2; LEFT=3
-dirs = [
-  {dx:0, dy:-1}
-  {dx:1, dy:0}
-  {dx:0, dy:1}
-  {dx:-1, dy:0}
-]
-
-# up, right, down, left
-edges = [
-  {ex:0,ey:0,isTop:true}
-  {ex:1,ey:0,isTop:false}
-  {ex:0,ey:1,isTop:true}
-  {ex:0,ey:0,isTop:false}
-]
 
 # This will happen for all tiles which aren't engines and aren't in shuttle zones
 # (so, engines, empty space, grills and bridges)
@@ -195,11 +237,13 @@ class Jit
   
   cellAt: (x, y, dir) -> cellAt @grid, x, y, dir
   cellOpposite: (x, y, dir) -> cellOpposite @grid, x, y, dir
+  cellOppositeEdge: (x, y, dir) -> cellOppositeEdge @grid, x, y, dir
 
   # ********
  
 
   constructor: (@grid, @opts = {}) ->
+    log @grid
     @fillMode = @opts.fillMode || 'engines'
     #@fillMode = 'shuttles'
 
@@ -264,7 +308,7 @@ class Jit
 
 
     @killRegionInSlot = []
-    @genRegionInSlot = []
+    #@genRegionInSlot = []
 
     @genZoneForRegion = []
 
@@ -284,15 +328,15 @@ class Jit
 
     @shuttleState = new Int32Array @shuttles.length
 
-    log 'grs', @genRegionInSlot
-
-    @makeRegion slot, @shuttleState while slot = @genRegionInSlot.pop()
+    #log 'grs', @genRegionInSlot
 
     #@fillRegions()
 
-    for s in @shuttles
-      @calcStateForces s, state for state in s.states
+    #for s in @shuttles
+    #  @makeStateForces s, state for state in s.states
     
+
+    #@makeRegion slot, states while {slot, states} = @genRegionInSlot.pop()
 
     log 'engines', @engines
     log 'shuttles', @shuttles
@@ -313,9 +357,9 @@ class Jit
           engine = {x, y, pressure, regions:[], id}
           @engines.push @engineGrid["#{x},#{y}"] = engine
 
-          if @fillMode in ['engines', 'all']
-            for d in [0...4]
-              @genRegionInSlot.push [x,y,d]
+          #if @fillMode in ['engines', 'all']
+          #  for d in [0...4]
+          #    @genRegionInSlot.push {slot:[x,y,d], states:{}}
 
         when 'shuttle', 'thinshuttle'
           # flood fill the shuttle extents.
@@ -353,15 +397,21 @@ class Jit
                 continue if v2 is 'shuttle' # ignore internal borders
                 s.edge.push {x:x+ex, y:y+ey, isTop, dir}
 
-                if @fillMode in ['shuttles', 'all']
-                  cell = @cellOpposite x, y, dir
-                  @genRegionInSlot.push cell if cell isnt null
+                #if @fillMode in ['shuttles', 'all']
+                #  cell = @cellOpposite x, y, dir
+                #  @genRegionInSlot.push {slot:cell, states:{}} if cell isnt null
 
               true
             else
               false
 
           @addShuttleState s, 0, 0
+
+
+
+
+  ########## SHUTTLES
+
 
   shuttleFillsCell: (x, y, s, stateid) ->
     #log 'shuttleFillsCell', x, y, s.id, stateid
@@ -381,17 +431,46 @@ class Jit
 
       list.push s.id
       list.push stateid
-      # This is going to do a lexographic sort, but it doesn't really matter so long as its stable.
+      # This is going to do a lexographic sort, but it doesn't really matter so
+      # long as its stable.
       @gridKey[k] = Object.keys(sids).sort().join ','
 
-    # TODO
+
+    # Lets invalidate some regions!
+    if (sw = @switchInSlot[k])
+      sw.each (r) ->
+        r.obsolete = yes
+
+        # TODO: Remove r's region connections
+
+        for {state} in r.appliesPressureTo
+          delete state.force
+
+      delete @switchInSlot[k]
+
+      ###
+      for {dx,dy}, dir in edges
+        list2 = @gridFill["#{x+dx},#{y+dy}"]
+        if list2 then for sid,i in list2 by 2
+          stateid = list2[i+1]
+          # Force the shuttle to rethink its forces
+      ###
+      
+    sids = sidsInGridFill @gridFill[k]
+    permuteStates @shuttles, sids, (shuttleStates) ->
+      # Teeechnically this check is not necessary - we check again in makeRegion.
+      if shuttleStates[s.id] != stateid
+        @genRegionInSlot.push {slot:[x,y], states:shuttleStates}
+
+    
+
     #if r = @regionInSlotByKey[k]
     #  @killRegionInSlot.push {r, x, y}
 
   addShuttleState: (s, dx, dy) ->
     # successor is the connected state in each direction
-    state = {dx, dy, flags:0, successor: [-1,-1,-1,-1]}
     stateid = s.states.length
+    state = {dx, dy, flags:0, successor: [-1,-1,-1,-1], id:stateid}
     s.states.push state
 
     for k,v of s.points when v is 'shuttle'
@@ -404,30 +483,60 @@ class Jit
     #console.log 'state', state
     stateid
 
-  calcStateForces: (s, state) ->
+  eachStateEdge: (s, state, fn) ->
     {dx, dy, flags} = state
-    xForce = {}
-    yForce = {}
-    for {x,y,isTop,dir} in s.edge
-      slot = @cellOpposite x, y, dir
+    for {x,y,dir} in s.edge # Edge also has isTop, but its redundant.
+      slot = @cellOppositeEdge x+dx, y+dy, dir
       continue unless slot
-      r = @regionInSlotByKey[slot]
-      throw Error 'sadf' if Array.isArray r
-      # If r is missing, we should be up against a wall or something. No
+      sw = @makeSwitchInSlot slot
+      # If sw is missing, we should be up against a wall or something. No
       # biggie.
-      continue unless r
+      continue unless sw
+      fn slot, sw, dir
 
-      r.appliesPressureTo.push {s,state}
+  makeStateForces: (s, state) ->
+    return state.force if state.force
 
-      if isTop
-        yForce[r.id] ?= 0
-        yForce[r.id] += dirs[dir].dy
-      else
-        xForce[r.id] ?= 0
-        xForce[r.id] += dirs[dir].dx
+    log 'makeStateForces-----------'
+    # For this state, first we'll figure out the surrounding regions & figure
+    # out which other shuttle states we depend on. (Based on any potentially
+    # adjacent shuttles). Usually this will be *none*.
 
-    # This could probably be munged into a slightly more useful form, but eh.
-    state.force = {x:xForce, y:yForce}
+    {dx, dy, flags} = state
+
+    sids = {}
+    shuttleStates = {}
+    shuttleStates[s.id] = state.id
+
+    @eachStateEdge s, state, (slot, sw) ->
+      for sid in sw.sidList when sid != s.id
+        sids[sid] = true
+
+    sw = new Switch (Object.keys(sids).map((x) -> +x).sort())
+
+    permuteStates @shuttles, sids, shuttleStates, =>
+      log 'permute', shuttleStates
+      xForce = {}
+      yForce = {}
+      @eachStateEdge s, state, (slot, sw, dir) =>
+        #log x, y, DN[dir]
+        log "switch at #{slot} applies #{DN[oppositeDir(dir)]} pressure to #{s.id} #{state}"
+        r = @makeRegion slot, shuttleStates
+
+        r.appliesPressureTo.push {s,state}
+
+        if dir in [UP, DOWN]
+          yForce[r.id] ?= 0
+          yForce[r.id] += dirs[dir].dy
+        else
+          xForce[r.id] ?= 0
+          xForce[r.id] += dirs[dir].dx
+
+      # This could probably be munged into a slightly more useful form, but eh.
+      sw.set shuttleStates, {x:xForce, y:yForce}
+      log 'set', shuttleStates, xForce, yForce
+
+    state.force = sw
 
 
   calcShuttleDirs: (s, state) ->
@@ -447,34 +556,22 @@ class Jit
     return yes
 
 
+
+
+
+
+
+
   ####### REGIONS
 
-  ###
-  fillRegions: ->
-    # Flood fill all the empty regions in the grid
-    for k,v of @grid when !@regionGrid[k]
-      {x,y} = parseXY k
-
-      # We'll skip making regions when the region is between two engines, or an
-      # engine and a wall or something.
-      for {ex,ey,isTop},dir in edges
-        {dx, dy} = dirs[dir]
-        v2 = @get x+dx, y+dy
-        # We're interested in every edge so long as both grid cells aren't
-        # walls, and we're not in the middle of two shuttles.
-        continue if !v2? || (v == 'shuttle' and v2 == 'shuttle')
-
-        @makeRegionFrom(x+ex, y+ey, isTop)
-  ###
-
-  getSwitchInSlot: (slot) ->
+  makeSwitchInSlot: (slot) ->
     [x0, y0, n0] = slot
     k0 = "#{x0},#{y0}"
     key = @gridKey[k0]
 
     # Early exit if the switch already exists & is current.
     sw = @switchInSlot[slot]
-    return sw if sw and sw.key is key and !sw.obsolete
+    return sw if sw and sw.key is (key || '') and !sw.obsolete
 
     # Don't create stupid switches. (This might be a pointless optimization...)
     v0 = @get x0, y0
@@ -485,46 +582,31 @@ class Jit
 
     # Now we need to go through all permutations of the shuttles in question
     # and figure out what the switch switches.
-    sw = {key, regions:null}
-    return @switchInSlot[slot] = sw
-
-  getRegionInSwitch: (list, sw, shuttleStates) ->
-    container = sw.regions
-    if list then for sid in list by 2
-      stateid = shuttleStates[sid]
-      return null if !container
-      container = container[stateid]
-
-    container
-
-  setRegionInSwitch: (list, sw, shuttleStates, r) ->
-    k = 'regions'
-    container = sw
-
-    if list then for sid in list by 2
-      stateid = shuttleStates[sid]
-
-      container[k] ||= []
-      container = container[k]
-      k = stateid
-
-    container[k] = r
-
+    return @switchInSlot[slot] = new Switch sidsInGridFill @gridFill
 
   makeRegion: (slot0, shuttleStates) ->
+    log 'mr', slot0, shuttleStates
+    console.trace 'blerp' unless slot0
     [x0, y0, n0] = slot0
     k0 = "#{x0},#{y0}"
     key0 = @gridKey[k0]
     list0 = @gridFill[k0]
 
-    sw = @getSwitchInSlot slot0
+    # No region in invalid slots
+    sw = @makeSwitchInSlot slot0
     return null unless sw
-    r = @getRegionInSwitch list0, sw, shuttleStates
-    return r if r and !r.killme
+    # No region if one already exists
+    r = sw.get shuttleStates
+    #console.log 'already region', slot0, sw, r
+    return r if r and !r.obsolete
+    # No region if the seed slot is filled in the current shuttleStates.
+    if list0 then for sid, i in list0 by 2
+      state = list0[i+1]
+      return null if shuttleStates[sid] == state
 
     id = "r#{@id()}"
  
-    log "creating region #{id} from [#{slot0.join ','}] with key #{key0}", shuttleStates
+    log "creating region #{id} from [#{slot0.join ','}] with key #{key0}" #, shuttleStates
     @regions[id] = r =
       engines: []
       #connections: null
@@ -532,7 +614,7 @@ class Jit
       appliesPressureTo: []
       id: id
       key: key0
-      killme: no
+      obsolete: no
       zone: null
 
     @genZoneForRegion.push r
@@ -548,6 +630,8 @@ class Jit
     # we'll copy the engines into the region at the end.
     containedEngines = {}
 
+    genRegionInSlot = []
+
     fillRegion @grid, slot0, (slot, hmm) =>
       [x, y, n] = slot
       #console.log x, y, isTop
@@ -555,11 +639,13 @@ class Jit
       k = "#{x},#{y}"
       sk = "#{slot}"
  
-      sw2 = @getSwitchInSlot slot
-      r2 = @getRegionInSwitch list, sw2, shuttleStates
+      sw2 = @makeSwitchInSlot slot
+      return no unless sw2
+      r2 = sw2.get shuttleStates
       list = @gridFill[slot]
 
       if @gridKey[k] != key0
+        log 'connection', list0, list
         # Connect us.
         if isListSubsetOf list0, list
           log 'sw2 looks down to me'
@@ -568,7 +654,7 @@ class Jit
             r2.down[id] = r
           else
             # Go make it, dagnabbit!
-            @genRegionInSlot.push slot
+            genRegionInSlot.push slot
         else
           # They look up to us.
           log 'sw2 looks up to me'
@@ -587,7 +673,7 @@ class Jit
         stateid = list[i+1]
         return no if shuttleStates[sid] is stateid
 
-      @setRegionInSwitch list0, sw2, shuttleStates, r
+      sw2.set shuttleStates, r
       r.size++
       
       engine = @engineGrid[k]
@@ -597,36 +683,15 @@ class Jit
       return yes
 
     r.engines = containedEngines
-    #r.connections = connections
 
-    
-    # For regions which have shuttles in them, we have to iterate through all
-    # shuttle states and figure out per-state vector mini region composition
-    # - Force on shuttles (& pushing which direction and how much)
-    # - Connectivity
-
-
-
-    ###
-    for eid, pressure of containedEngines
-      eid = eid|0
-      r.engines.push eid
-      r.pressure += pressure
-      @engines[eid].regions.push rid
-    ###
+    # Recurse...
+    @makeRegion r, shuttleStates for r in genRegionInSlot
 
     r
 
-    
-  ###
-  recalcDerivedRegions: ->
-    for id of @dirtyRegions
-      r = @regions[id]
-      # Flood fill using r's connections
-      console.log 'refilling', id
-  ###
-
+   
   step: ->
+    log '####### STEP #######'
     disturbedShuttles = {}
 
     # 1. Update the zones
@@ -659,16 +724,20 @@ class Jit
       flags = state.flags
 
       moved = no
-      if flags & ((1<<UP)|(1<<DOWN))
-        force = 0
-        console.log 'checking up/down force'
-        for rid,mult of state.force.y
-          zone = @regions[rid].zone
-          force -= zone.pressure * mult
+      forces = @makeStateForces(s, state).get @shuttleState
+      throw Error 'Could not find forces' unless forces
+      log 'force', forces
 
-        if force
-          dir = if force < 0 then UP else DOWN
-          forceMag = abs force
+      if flags & ((1<<UP)|(1<<DOWN))
+        impulse = 0
+        console.log 'checking up/down force'
+        for rid,mult of forces.y
+          zone = @regions[rid].zone
+          impulse -= zone.pressure * mult
+
+        if impulse
+          dir = if impulse < 0 then UP else DOWN
+          forceMag = abs impulse
 
           while forceMag
             break unless @tryMoveShuttle s, dir
@@ -676,7 +745,7 @@ class Jit
             forceMag--
 
           if flags & 1<<dir
-            console.log 'force', force, dir
+            console.log 'force', impulse, dir
 
     # 3. Regenerate invalidated regions
     console.log 'invalid regions:', @invalidRegions.length
@@ -720,10 +789,6 @@ class Jit
 
 
 
-        #if (force < 0 && (flags & (1<<UP))) || (force > 0 && (flags & (1<<DOWN)))
-
-
-
 
 
 
@@ -739,7 +804,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
   
-  #jit.step()
+  jit.step()
   log '##########'
   log jit.gridFill
   log jit.shuttles[0].states
