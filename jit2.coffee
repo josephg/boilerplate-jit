@@ -103,6 +103,7 @@ class Grid
     return row.get y if row
 
   set: (x, y, v) ->
+    oldValue = @get x, y
     row = @rows.get x
     if !row
       row = new Map
@@ -113,7 +114,7 @@ class Grid
     else
       row.delete y
 
-    o(x, y, v) for o in @observers
+    if oldValue != v then o(x, y, v) for o in @observers
 
   each: (fn) ->
     @rows.forEach (row, x) ->
@@ -122,13 +123,20 @@ class Grid
 
   observe: (fn) -> @observers.push fn
   
+  depFor: (x, y) ->
+    row = @rows.get x
+    if !row
+      row = new Map
+      @rows.set x, row
+
+    {map:row, key:y}
 
 
 ######## Dependancy tree tracking
 
 listeners = new WeakMap
 
-deps = do ->
+depStore = do ->
   # Maps from object -> list of things it generates
   depRoot = new WeakMap
 
@@ -141,45 +149,33 @@ deps = do ->
     container.delete key
     deps
 
-  add: (map, key, obj) -> # map[key] is used to make obj
-    deps = depRoot.get map
-    if !deps
-      deps = new Map
-      depRoot.set map, deps
+  add: (source, result) -> # source.map[source.key] used to make result.map[result.key]
+    container = depRoot.get source.map
+    if !container
+      container = new Map
+      depRoot.set source.map, container
 
-    currentDeps = deps.get key
+    currentDeps = container.get source.key
     if currentDeps
-      currentDeps.push obj
+      currentDeps.push result
     else
-      deps.set key, [obj]
+      container.set source.key, [result]
 
 
-heldDeps = null
+#activeTransaction = null
 
-transaction = (fn) ->
-  if heldDeps
-    fn()
-  else
-    heldDeps = []
-    fn()
-    while heldDeps.length
-      d = heldDeps
-      heldDeps = []
-
+didChange = ({map, key}) ->
+  deps = depStore.getAndClear map, key
   
+  if deps then for d in deps
+    log 'blowing up', d.key
+    if d.map.delete
+      d.map.delete d.key
+    else
+      delete d.map[d.key]
+    # And recursively wipe out the whole tree
+    didChange d
 
-setWithDeps = (obj, key, value, deps) ->
-  if obj instanceof Map
-    # First reset any dependant data
-    oldDeps = dependancies.get value
-    #if oldDeps
-    #  for v in oldDeps
-
-
-    obj.set key, value
-    dependancies.set value, deps
-  else
-    throw Error 'setWithDeps not implemented on obj'
 
 eachFwd = (obj, observer) ->
   listeners.set obj, observer
@@ -199,6 +195,17 @@ eachFwd = (obj, observer) ->
   else
     throw Error 'eachFwd not implemented on obj'
 
+
+setWithDeps = (map, key, val, sourceDeps) ->
+  #log 'map', map, map.constructor
+
+  if map.set
+    map.set key, val
+  else
+    map[key] = val
+
+  for d in sourceDeps
+    depStore.add d, {map, key}
 
 ###
 setWithDeps @engines, [x,y], {v:1}, [{@grid, [x,y]}]
@@ -229,20 +236,26 @@ class Jit
 
 
   initialize: ->
+    @grid.observe (x, y) => didChange @grid.depFor x, y
+
     eachFwd @grid, (x, y, v) =>
+      return unless v
+
       if v in ['nothing', 'thinshuttle']
         return if @regionAtCell.get x, y
 
         id = "r#{@id()}"
         console.log "making #{id} at", x, y
-        @regions[id] = r =
+
+        r =
           id: id
           size: 0
 
-        #deps = []
+        deps = []
 
         fill {x,y}, (x, y) =>
           v = @grid.get x, y
+          deps.push @grid.depFor x, y
           if v in ['nothing', 'thinshuttle']
             @regionAtCell.set x, y, r
             r.size++
@@ -251,10 +264,15 @@ class Jit
           else
             no
 
+        #log 'deps', deps
+        #@regions[id] = r
+        setWithDeps @regions, id, r, deps
+
     log @regions
 
-    @grid.set 1, 1, 'nothing'
+    @grid.set 1, 2, null
 
+    log 'rrrrr', @regions
 
 
 
