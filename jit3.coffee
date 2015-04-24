@@ -121,8 +121,12 @@ class Jit
 
     @shuttles = new Set
     @shuttles.watch = new Watcher @shuttles
-    # This just has the base location of shuttles. Its only useful to find &
-    # kill shuttles when they change.
+    # This maps x,y -> a set of shuttles which sometimes occupy this region.
+    # Its different from fillList below in two ways:
+    #  1. It maps to the shuttle, not the shuttle state
+    #  2. It includes any shuttle which occupies a grid cell using thinshuttle
+    #
+    # Its only useful to find & kill shuttles when the grid changes.
     @shuttleGrid = new Map2
 
     # Map from shuttle -> [state]
@@ -175,14 +179,20 @@ class Jit
       if v in ['shuttle', 'thinshuttle']
         @makeShuttle x, y
       else
-        @destroyShuttle x, y
+        # If we edit a grid cell that a shuttle has ever moved in, kill it.
+        @deleteShuttlesAt x, y
+
         # There might have been a shuttle nearby. Try and make some.
         # This is always needed like this because of txns. :(
         for {dx, dy} in DIRS
           @makeShuttle x+dx, y+dy
 
-  destroyShuttle: (x, y) ->
-    s = @shuttleGrid.get x, y
+  deleteShuttlesAt: (x, y) ->
+    if (shuttles = @shuttleGrid.get x, y)
+      shuttles.forEach (s) => @deleteShuttle s
+      shuttles.clear()
+
+  deleteShuttle: (s) ->
     return no unless s?.used
     log 'destroying shuttle', s
     s.used = no
@@ -195,8 +205,14 @@ class Jit
     v = @grid.get x, y
     return unless v in ['shuttle', 'thinshuttle']
 
-    s = @shuttleGrid.get x, y
-    return if s?.used and s?.points.get(x, y) is v
+    # SO, I don't want to remake a shuttle lots of times if you draw the
+    # shuttle inside a transaction. So, if we call makeShuttle and there's
+    # already a shuttle occupying (x,y), just ignore the request.
+    alreadyExists = no
+    @shuttleGrid.get(x, y)?.forEach (s) ->
+      if s?.used
+        alreadyExists = yes if s.points.get(x, y) is v
+    return if alreadyExists
 
     s =
       id: "s#{@id()}"
@@ -207,11 +223,14 @@ class Jit
     @shuttles.add s
 
     fill {x, y}, (x, y) =>
-      @destroyShuttle x, y
-      
       v = @grid.get(x, y)
       if v in ['shuttle', 'thinshuttle']
-        @shuttleGrid.set x, y, s
+        @deleteShuttlesAt x, y
+        if (set = @shuttleGrid.get x, y)
+          set.add s
+        else
+          @shuttleGrid.set x, y, new Set [s]
+
         s.size++
         s.points.set x, y, v
         yes
@@ -224,7 +243,7 @@ class Jit
     @shuttles.watch.signal s
 
 
-  # ------- Shuttles -> State --------
+  # ------- Shuttles -> State, fill list --------
   shuttleToStatesInit: ->
     @shuttles.watch.on (shuttle) =>
       if shuttle.used
@@ -245,13 +264,6 @@ class Jit
             set.delete state
             log 'removing state from', x, y
             @fillList.watch.signal x, y, set
-
-    #@grid.watch.on (x, y) ->
-    #  v = @grid.get x, y
-
-    # Here we need to find any states that contain (x,y) and regenerate them
-    # 
-    # Also we need to regen the flags on any state bordering on this grid cell.
 
   canShuttleFitAt: (shuttle, dx, dy) ->
     shuttle.points.forEach (x, y) =>
@@ -340,14 +352,16 @@ class Jit
     # Invariant: Each cell with a shuttle is part of a shuttle
     @grid.forEach (x, y, v) =>
       if v in ['shuttle', 'thinshuttle']
-        s = @shuttleGrid.get x, y
-        assert s?.used
-        assert @shuttles.has s
+        shuttle = null
+        @shuttleGrid.get(x, y).forEach (s) ->
+          shuttle = s if s.used and s.points.has x, y
+        assert shuttle
+        assert @shuttles.has shuttle
     # Invariant: Each cell in the shuttleGrid corresponds to a shuttle cell
     @shuttleGrid.forEach (x, y, s) =>
       return unless s.used
       v = @grid.get x, y
-      assert v in ['shuttle', 'thinshuttle']
+      #assert v in ['shuttle', 'thinshuttle']
     # Invariant: Each shuttle in @shuttles is used
     @shuttles.forEach (s) =>
       assert s.used
@@ -357,9 +371,10 @@ class Jit
       s.points.forEach (x, y, v) =>
         assert.equal v, @grid.get x, y
         assert v in ['shuttle', 'thinshuttle']
+        log 'v at', x, y, v, s.points
         for {dx, dy} in DIRS when !s.points.has x+dx, y+dy
           v2 = @grid.get x+dx, y+dy
-          #log 'v2 at', x+dx, y+dy, v2
+          log 'v2 at', x+dx, y+dy, v2
           assert v2 not in ['shuttle', 'thinshuttle']
 
 
