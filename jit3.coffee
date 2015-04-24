@@ -121,13 +121,18 @@ class Jit
 
     @shuttles = new Set
     @shuttles.watch = new Watcher @shuttles
+
+    # This just maps from the base location of shuttles to the shuttles
+    # themselves. Its only useful to find & kill shuttles when they change.
+    @shuttleGrid = new Map2
+
     # This maps x,y -> a set of shuttles which sometimes occupy this region.
     # Its different from fillList below in two ways:
     #  1. It maps to the shuttle, not the shuttle state
     #  2. It includes any shuttle which occupies a grid cell using thinshuttle
     #
     # Its only useful to find & kill shuttles when the grid changes.
-    @shuttleGrid = new Map2
+    @stateGrid = new Map2 -> new Set
 
     # Map from shuttle -> [state]
     @shuttleStates = new Map
@@ -135,7 +140,7 @@ class Jit
       @shuttleStates.forEach (states, shuttle) ->
         fn shuttle, state, yes for state in states
 
-    @fillList = new Map2 # Map from (x,y) -> set of states
+    @fillList = new Map2 -> new Set # Map from (x,y) -> set of states
     @fillList.watch = new Watcher @fillList # Emit (x, y, new list).
 
     @regionGrid = new Map2 # Map from (x,y) -> each set of states -> region
@@ -179,20 +184,14 @@ class Jit
       if v in ['shuttle', 'thinshuttle']
         @makeShuttle x, y
       else
-        # If we edit a grid cell that a shuttle has ever moved in, kill it.
-        @deleteShuttlesAt x, y
+        @deleteShuttleAt x, y
 
-        # There might have been a shuttle nearby. Try and make some.
-        # This is always needed like this because of txns. :(
+        # There might still be a shuttle nearby.
         for {dx, dy} in DIRS
           @makeShuttle x+dx, y+dy
 
-  deleteShuttlesAt: (x, y) ->
-    if (shuttles = @shuttleGrid.get x, y)
-      shuttles.forEach (s) => @deleteShuttle s
-      shuttles.clear()
-
-  deleteShuttle: (s) ->
+  deleteShuttleAt: (x, y) ->
+    s = @shuttleGrid.get x, y
     return no unless s?.used
     log 'destroying shuttle', s
     s.used = no
@@ -205,14 +204,8 @@ class Jit
     v = @grid.get x, y
     return unless v in ['shuttle', 'thinshuttle']
 
-    # SO, I don't want to remake a shuttle lots of times if you draw the
-    # shuttle inside a transaction. So, if we call makeShuttle and there's
-    # already a shuttle occupying (x,y), just ignore the request.
-    alreadyExists = no
-    @shuttleGrid.get(x, y)?.forEach (s) ->
-      if s?.used
-        alreadyExists = yes if s.points.get(x, y) is v
-    return if alreadyExists
+    s = @shuttleGrid.get x, y
+    return if s?.used and s?.points.get(x, y) is v
 
     s =
       id: "s#{@id()}"
@@ -225,11 +218,8 @@ class Jit
     fill {x, y}, (x, y) =>
       v = @grid.get(x, y)
       if v in ['shuttle', 'thinshuttle']
-        @deleteShuttlesAt x, y
-        if (set = @shuttleGrid.get x, y)
-          set.add s
-        else
-          @shuttleGrid.set x, y, new Set [s]
+        @deleteShuttleAt x, y
+        @shuttleGrid.set x, y, s
 
         s.size++
         s.points.set x, y, v
@@ -240,30 +230,46 @@ class Jit
     throw Error 'empty' unless s.size
 
     log 'added shuttle', s
-    @shuttles.watch.signal s
+    @shuttles.watch.signalImm s
 
 
   # ------- Shuttles -> State, fill list --------
   shuttleToStatesInit: ->
     @shuttles.watch.on (shuttle) =>
+      # If the shuttle is useful, make a fresh shuttle state list for it.
       if shuttle.used
-        # The shuttle has just been made. Make a fresh shuttle state list for
-        # it.
         @createStateAt shuttle, 0, 0
       else
-        states = @shuttleStates.get shuttle
-        @shuttleStates.delete shuttle
+        @deleteStatesForShuttle shuttle
 
-        for state in states
-          @shuttleStates.watch.signalImm shuttle, state, no
+    @grid.watch.on (x, y) =>
+      # If we edit a grid cell that a shuttle has ever moved in, reset its
+      # states. This is important because the changed cell could block a
+      # tunnel that a shuttle thinks it can move down.
+      @stateGrid.get(x, y)?.forEach (s) =>
+        # Don't wipe the states for any shuttle which actually starts here...
+        # (This is going to be a treat with moved shuttles, I can tell...)
+        #
+        # (This is an optimization)
+        if @shuttleGrid.get(x, y) != s
+          @deleteStatesForShuttle s
+          if s.used
+            @createStateAt s, 0, 0
+ 
+  deleteStatesForShuttle: (shuttle) ->
+    return unless (states = @shuttleStates.get shuttle)
 
-          shuttle.points.forEach (x, y, v) =>
-            x += state.dx; y += state.dy
-            set = @fillList.get x, y
-            return unless set
-            set.delete state
-            log 'removing state from', x, y
-            @fillList.watch.signal x, y, set
+    @shuttleStates.delete shuttle
+
+    for state in states
+      @shuttleStates.watch.signalImm shuttle, state, no
+
+      shuttle.points.forEach (x, y, v) =>
+        x += state.dx; y += state.dy
+        set = @fillList.get x, y
+        if set.delete state
+          log 'removing state from', x, y
+          @fillList.watch.signal x, y, set
 
   canShuttleFitAt: (shuttle, dx, dy) ->
     shuttle.points.forEach (x, y) =>
@@ -302,25 +308,20 @@ class Jit
     # yet. I guess if you want the fill list, you should just listen to *that*.
     @shuttleStates.watch.signal shuttle, state, yes
 
-    # Populate the fill list
+    # Populate the fill list & state grid.
     shuttle.points.forEach (x, y, v) =>
       assert v in ['shuttle', 'thinshuttle']
-      return unless v is 'shuttle'
-
       x += state.dx; y += state.dy
 
-      log 'adding to fill list at', x, y
-      
-      # Add state to fillList at x, y
-      set = @fillList.get x, y
-      if set
-        set.add state
-      else
-        set = new Set
-        set.add state
-        @fillList.set x, y, set
+      log "adding #{v} to fill / state list at", x, y
 
-      @fillList.watch.signal x, y, set
+      @stateGrid.get(x, y).add shuttle
+
+      if v is 'shuttle'
+        # Add state to fillList at x, y
+        set = @fillList.get x, y
+        set.add state
+        @fillList.watch.signal x, y, set
 
     log 'created new state', state
 
@@ -352,16 +353,14 @@ class Jit
     # Invariant: Each cell with a shuttle is part of a shuttle
     @grid.forEach (x, y, v) =>
       if v in ['shuttle', 'thinshuttle']
-        shuttle = null
-        @shuttleGrid.get(x, y).forEach (s) ->
-          shuttle = s if s.used and s.points.has x, y
-        assert shuttle
-        assert @shuttles.has shuttle
+        s = @shuttleGrid.get x, y
+        assert s?.used
+        assert @shuttles.has s
     # Invariant: Each cell in the shuttleGrid corresponds to a shuttle cell
     @shuttleGrid.forEach (x, y, s) =>
       return unless s.used
       v = @grid.get x, y
-      #assert v in ['shuttle', 'thinshuttle']
+      assert v in ['shuttle', 'thinshuttle']
     # Invariant: Each shuttle in @shuttles is used
     @shuttles.forEach (s) =>
       assert s.used

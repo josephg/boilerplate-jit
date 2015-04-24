@@ -2,13 +2,18 @@
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
     @levelOne = new Map
-    if data
+    if typeof data is 'function'
+      @makeDefault = data
+    else if data
       for [k1, k2, v] in data
         @set k1, k2, v
 
   get: (k1, k2) ->
     inner = @levelOne.get k1
-    return inner.get k2 if inner
+    v = inner.get k2 if inner
+    if !v? and @makeDefault
+      @set k1, k2, v = @makeDefault()
+    v
 
   has: (k1, k2) ->
     inner = @levelOne.get k1
