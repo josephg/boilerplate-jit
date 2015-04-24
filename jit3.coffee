@@ -73,13 +73,17 @@ class Jit
     @shuttleStates = new Map
     @shuttleStates.watch = new Watcher (fn) =>
       @shuttleStates.forEach (states, shuttle) ->
-        fn shuttle, state for state in states
+        fn shuttle, state, yes for state in states
 
-    
+    @fillList = new Map2 # Map from (x,y) -> set of states
+    @fillList.watch = new Watcher @fillList # Emit (x, y, new list).
+
+
 
     @gridToEnginesInit()
     @gridToShuttleInit()
     @shuttleToStatesInit()
+    @fillListInit()
 
 
     #@engines.forEach (x, y, v) -> log x, y, v
@@ -130,24 +134,28 @@ class Jit
 
   makeShuttle: (x, y) ->
     #log 'makeShuttle at', x, y, @grid.get(x, y)
-    return unless @grid.get(x, y) in ['shuttle', 'thinshuttle']
-    return if (@shuttleGrid.get x, y)?.used
+    v = @grid.get x, y
+    return unless v in ['shuttle', 'thinshuttle']
+
+    s = @shuttleGrid.get x, y
+    return if s?.used and s?.points.get(x, y) is v
 
     s =
       id: "s#{@id()}"
       used: yes
       size: 0 # For debugging
-      points: []
+      points: new Map2
 
     @shuttles.add s
 
     fill {x, y}, (x, y) =>
       @destroyShuttle x, y
-
-      if @grid.get(x, y) in ['shuttle', 'thinshuttle']
+      
+      v = @grid.get(x, y)
+      if v in ['shuttle', 'thinshuttle']
         @shuttleGrid.set x, y, s
         s.size++
-        s.points.push {x, y}
+        s.points.set x, y, v
         yes
       else
         no
@@ -161,16 +169,17 @@ class Jit
   # ------- Shuttles -> State --------
   shuttleToStatesInit: ->
     @shuttles.watch.on (shuttle) =>
-      log 'qs', shuttle
       if shuttle.used
         # The shuttle has just been made. Make a fresh shuttle state list for
         # it.
         @createStateAt shuttle, 0, 0
       else
+        states = @shuttleStates.get shuttle
         @shuttleStates.delete shuttle
+        @shuttleStates.watch.signalImm shuttle, state, no for state in states
 
   canShuttleFitAt: (shuttle, dx, dy) ->
-    for {x, y} in shuttle.points
+    shuttle.points.forEach (x, y) =>
       # The grid cell is un-enterable.
       if @grid.get(x+dx, y+dy) not in ['shuttle', 'thinshuttle', 'nothing']
         return no
@@ -192,6 +201,7 @@ class Jit
       dy: dy
       flags: flags
       successor: [-1, -1, -1, -1]
+      shuttle: shuttle
 
     states = @shuttleStates.get shuttle
     if states
@@ -199,7 +209,7 @@ class Jit
     else
       @shuttleStates.set shuttle, [state]
 
-    @shuttleStates.watch.signal shuttle, state
+    @shuttleStates.watch.signal shuttle, state, yes
     log 'created new state', state
 
     state
@@ -211,6 +221,46 @@ class Jit
 
       x += dx; y += dy
     ###
+
+  # ------- State -> Fill List --------
+
+  fillListInit: ->
+    @shuttleStates.watch.on (shuttle, state, isCreated) =>
+      log 'fli', shuttle, state, isCreated
+
+      if isCreated
+        return unless shuttle.used
+
+        shuttle.points.forEach (x, y, v) =>
+          assert v in ['shuttle', 'thinshuttle']
+          return unless v is 'shuttle'
+
+          x += state.dx; y += state.dy
+
+          log 'adding to fill list at', x, y
+          
+          # Add state to fillList at x, y
+          set = @fillList.get x, y
+          if set
+            set.add state
+          else
+            set = new Set
+            set.add state
+            @fillList.set x, y, set
+
+          @fillList.watch.signal x, y, set
+      else
+        # Kapowey!
+        log 'Kapowey'
+        shuttle.points.forEach (x, y, v) =>
+          x += state.dx; y += state.dy
+          set = @fillList.get x, y
+          return unless set
+          set.delete state
+          log 'removing state from', x, y
+          @fillList.watch.signal x, y, set
+
+
 
 
 
@@ -229,10 +279,19 @@ class Jit
       v = @grid.get x, y
       assert v in ['shuttle', 'thinshuttle']
     # Invariant: Each shuttle in @shuttles is used
-    @shuttles.forEach (s) ->
+    @shuttles.forEach (s) =>
       assert s.used
       assert s.size
-    #-Invariant: Points list matches
+    # Invariant: Points list matches
+      
+      s.points.forEach (x, y, v) =>
+        assert.equal v, @grid.get x, y
+        assert v in ['shuttle', 'thinshuttle']
+        for {dx, dy} in DIRS when !s.points.has x+dx, y+dy
+          v2 = @grid.get x+dx, y+dy
+          #log 'v2 at', x+dx, y+dy, v2
+          assert v2 not in ['shuttle', 'thinshuttle']
+
 
     #ENGINES:
     # Invariant: Each engine cell is in the engineGrid
@@ -252,12 +311,27 @@ class Jit
       states = @shuttleStates.get s
       assert states
       assert states.length >= 1
-      #for state in states
-
+      stateAt = new Set2
+      for state in states
+        assert !stateAt.has state.dx, state.dy
+        stateAt.add state.dx, state.dy
     # Invariant: There is no shuttle state list for unused shuttles
     @shuttleStates.forEach (states, s) =>
       assert s.used
+      states.forEach (state) ->
+        assert.equal state.shuttle, s
     
+    #FILL LIST:
+    @fillList.forEach (x, y, set) =>
+      set.forEach (state) =>
+    # Invariant: Each state in the fill list has a live shuttle
+        assert state.shuttle.used
+
+    # Invariant: Each fill in the fill list corresponds to a shuttle grid cell
+        log 'xx', x, y, state.dx, state.dy, state
+        x = x - state.dx; y = y - state.dy
+        v = @grid.get x, y
+        assert.equal v, 'shuttle'
 
   debugPrint: ->
     crapGrid = {}
@@ -266,6 +340,9 @@ class Jit
     util.printGrid (util.gridExtents crapGrid), crapGrid
 
     log 'shuttles', @shuttles
+
+    #@fillList.forEach (x, y, s) ->
+    #  log 'fl', x, y, s
 
 
   torture: ->
@@ -284,6 +361,7 @@ class Jit
       try
         @check()
       catch e
+        log '****** CRASH ******'
         @debugPrint()
         throw e
 
