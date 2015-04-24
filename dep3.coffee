@@ -110,6 +110,11 @@ connections.watch = new Watcher
 incompleteRegions = new Set
 
 connections.forEach2 = (fn) ->
+  regions.forEach2 (r1) =>
+    s = @get2(r1)
+    log 's', s, r1
+    s?.forEach (r2) ->
+      fn r1, r2
 
 regions.watch.on (r, created) ->
   if created
@@ -128,9 +133,9 @@ regions.watch.on (r, created) ->
 rmConnection = (r1, r2) ->
   log 'rm connection', r1, r2
   set = connections.get r1
-  #if set?.delete r2
+  set?.delete r2
   #  connections.watch.signal r1, r2
-  connections.delete r1 if set.size is 0
+  connections.delete r1 if set?.size is 0
 
 connections.get2 = (r) ->
   cs = @get r
@@ -138,23 +143,26 @@ connections.get2 = (r) ->
     cs
   else
     @gen r
+    @get r
 
 connections.gen = (r) ->
   # Generate connections for region r
-  log 'new region', r
+  log 'generating connections for region', r
   # Look for regions on either side
-  r2 = regionForCell.get r.min - 2
+  r2 = regions.get2 r.min - 2
   if r2?.used
     # Add a connection!
     addConnection r, r2
     addConnection r2, r
   
-  r2 = regionForCell.get r.max + 2
+  r2 = regions.get2 r.max + 2
   if r2?.used
     # Add a connection!
     addConnection r, r2
     addConnection r2, r
+
   incompleteRegions.delete r
+
 
 addConnection = (r1, r2) ->
   log 'add connection', r1, r2
@@ -165,14 +173,14 @@ addConnection = (r1, r2) ->
     connections.watch.signal r1, r2
 
 invariants.push ->
-  connections.forEach (set, r1) ->
-    set.forEach (r2) ->
-      # Invariant: All connections refer to active regions
-      assert r1.used
-      assert r2.used
+  connections.forEach2 (r1, r2) ->
+    # Invariant: All connections refer to active regions
+    log 'connections foreach', r1, r2
+    assert r1.used
+    assert r2.used
 
-      # Invariant: All connections are at least 1 apart
-      assert (r1.max == r2.min - 2) or (r2.max == r1.min - 2)
+    # Invariant: All connections are at least 1 apart
+    assert (r1.max == r2.min - 2) or (r2.max == r1.min - 2)
 
   # ... And Invariant: There exists a connection between any adjacent regions
   # You get the point.
@@ -181,36 +189,32 @@ connections.watch.on (r1, r2) ->
   log 'XX connection from', r1, r2
 
 
-###
 data.set2 1, true
 data.set2 2, true
-data.set2 3, true
+data.set2 3, false
 data.set2 4, true
 data.set2 5, true
 
 log data
 log regions
 
-regions.forEach2 (r) -> log r
-log 'xxx'
-data.set2 3, false
-regions.forEach2 (r) -> log r
+#data.set2 3, false
+#regions.forEach2 (r) -> log r
 
-data.del2 2
-data.del2 3
+#data.del2 2
+#data.del2 3
 
 regions.forEach2 (r) -> log r
 
-log regionForCell
-connections.forEach (s, r) ->
-  log 'connections for', r, s
-###
+#log regionForCell
+#connections.forEach (s, r) ->
+#  log 'connections for', r, s
 
 mersenne = require 'mersenne'
 mersenne.seed 123
 
 for [1...1000]
-  for [1..5]
+  for [1...2]
     v = mersenne.rand() % 5
     data.set2 v, !!(mersenne.rand() % 2)
 
@@ -228,9 +232,10 @@ for [1...1000]
 
     throw e
 
-
 log data
 log 'regions:'
 regions.forEach2 (r) -> log r
+log 'connections:'
+connections.forEach2 (r1, r2) -> log r1, r2
 
 console.log 'ss', sentSignals
