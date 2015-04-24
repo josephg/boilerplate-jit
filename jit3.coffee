@@ -141,7 +141,6 @@ class Jit
     @gridToEnginesInit()
     @gridToShuttleInit()
     @shuttleToStatesInit()
-    @fillListInit()
     @regionsInit()
 
 
@@ -235,7 +234,17 @@ class Jit
       else
         states = @shuttleStates.get shuttle
         @shuttleStates.delete shuttle
-        @shuttleStates.watch.signalImm shuttle, state, no for state in states
+
+        for state in states
+          @shuttleStates.watch.signalImm shuttle, state, no
+
+          shuttle.points.forEach (x, y, v) =>
+            x += state.dx; y += state.dy
+            set = @fillList.get x, y
+            return unless set
+            set.delete state
+            log 'removing state from', x, y
+            @fillList.watch.signal x, y, set
 
     #@grid.watch.on (x, y) ->
     #  v = @grid.get x, y
@@ -277,7 +286,30 @@ class Jit
     else
       @shuttleStates.set shuttle, [state]
 
+    # I don't know if this is ok, because we haven't filled in the fill list
+    # yet. I guess if you want the fill list, you should just listen to *that*.
     @shuttleStates.watch.signal shuttle, state, yes
+
+    # Populate the fill list
+    shuttle.points.forEach (x, y, v) =>
+      assert v in ['shuttle', 'thinshuttle']
+      return unless v is 'shuttle'
+
+      x += state.dx; y += state.dy
+
+      log 'adding to fill list at', x, y
+      
+      # Add state to fillList at x, y
+      set = @fillList.get x, y
+      if set
+        set.add state
+      else
+        set = new Set
+        set.add state
+        @fillList.set x, y, set
+
+      @fillList.watch.signal x, y, set
+
     log 'created new state', state
 
     state
@@ -289,44 +321,6 @@ class Jit
 
       x += dx; y += dy
     ###
-
-  # ------- State -> Fill List --------
-
-  fillListInit: ->
-    @shuttleStates.watch.on (shuttle, state, isCreated) =>
-      log 'fli', shuttle, state, isCreated
-
-      if isCreated
-        return unless shuttle.used
-
-        shuttle.points.forEach (x, y, v) =>
-          assert v in ['shuttle', 'thinshuttle']
-          return unless v is 'shuttle'
-
-          x += state.dx; y += state.dy
-
-          log 'adding to fill list at', x, y
-          
-          # Add state to fillList at x, y
-          set = @fillList.get x, y
-          if set
-            set.add state
-          else
-            set = new Set
-            set.add state
-            @fillList.set x, y, set
-
-          @fillList.watch.signal x, y, set
-      else
-        # Kapowey!
-        log 'Kapowey'
-        shuttle.points.forEach (x, y, v) =>
-          x += state.dx; y += state.dy
-          set = @fillList.get x, y
-          return unless set
-          set.delete state
-          log 'removing state from', x, y
-          @fillList.watch.signal x, y, set
 
   # ------- fill list -> regions --------
 
