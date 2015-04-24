@@ -1,64 +1,3 @@
-# boilerplate jit parser. This is an optimized version of the boilerplate
-# compiler, but without any codegen. It uses a lot of newer ideas to fix
-# missteps with the boilerplate compiler. The idea is that when the world is
-# first scanned, we don't assume any shuttles can move. When shuttles actually
-# move to new places, we re-flood fill the minimal amount of stuff and expand
-# the model accordingly.
-#
-# Say, given the world:
-#
-#     S
-# N--------S
-#
-# First, we flood fill out the one region. The region is non-conditional, and connects:
-#
-# r1 {engines:e1} force on {shuttle 1 down}, {shuttle 2 left} connections {}
-# dirty regions: r1
-#
-# calculate transient regions:
-# tr1 = {r1, force:-1}
-#
-# -> unstable shuttles: s1, s2
-#
-# Shuttles move - scan s1, s2. They both move to:
-#
-#     -
-# N---S---S-
-#
-# We add state 2 to each shuttle.
-# - The shuttles invading region r1 means we discard r1 (entered region) and
-#   recalculate it from the edges of the entered regions. (Although we should
-#   do all the discarding first, then all the recalculating).
-# - Each space vacated by the shuttles should also be calculated (if its not there already).
-#
-# In both cases, we might need to iterate through every state of the shuttle
-# and calculate connectivity individually in each one. Although there's surely
-# ways to speed this up & reuse stuff.
-#
-# So:
-#     3
-# N222455567
-#
-# regions 2 and 5 are normal regions. Region 3 is unnecessary. Region 4 is dependant on shuttle S1's state:
-# {0:{connects 2 and 5, pulls down on S1}, 1:{does nothing}}
-#
-# .... no, this isn't good enough - we also need to calculate the negative pull of 2 on S1 in state 1!
-#
-#
-#
-#
-#
-# then in step() we do the following steps:
-#
-#
-#
-# transient regions recalculated
-# resultant force calculated
-# shuttles move
-# (if new state, regions invalidated)
-# (regions recalculated)
-# transient regions invalidated
-
 {parseXY, fill} = util = require './util'
 log = require './log'
 
@@ -195,14 +134,27 @@ eachFwd = (obj, observer) ->
   else
     throw Error 'eachFwd not implemented on obj'
 
+# Set map[key] = val
+set = (map, key, val) ->
+  if map.set # Map / WeakMap
+    if val?
+      map.set key, val
+    else
+      map.delete key
+  else if map.add # Set / WeakSet
+    if val?
+      map.add val
+    else
+      map.delete val
+  else # Object
+    if val?
+      map[key] = val
+    else
+      delete map[key]
 
 setWithDeps = (map, key, val, sourceDeps) ->
   #log 'map', map, map.constructor
-
-  if map.set
-    map.set key, val
-  else
-    map[key] = val
+  set map, key, val
 
   for d in sourceDeps
     depStore.add d, {map, key}
@@ -234,43 +186,69 @@ class Jit
 
     @initialize()
 
+  regionDestroy: (r, x, y) ->
+    return unless r?.used
+    log "blowing up region #{r.id}"
+    r.used = no
+    delete @regions[r.id]
+    didChange {map:@regions, key:r.id}
+
+    if x?
+      for {dx, dy} in dirs
+        @genRegions x+dx, y+dy
+
+  genRegions: (x, y) =>
+    v = @grid.get x, y
+    return unless v
+
+    if v in ['nothing', 'thinshuttle']
+      return if @regionAtCell.get(x, y)?.used
+
+      id = "r#{@id()}"
+      console.log "making #{id} at", x, y
+
+      r =
+        id: id
+        size: 0
+        used: yes
+
+      #deps = []
+
+      fill {x,y}, (x, y) =>
+        v = @grid.get x, y
+        #deps.push @grid.depFor x, y
+        if v in ['nothing', 'thinshuttle']
+          @regionAtCell.set x, y, r
+          r.size++
+
+          yes
+        else
+          no
+
+      #log 'deps', deps
+      @regions[id] = r
+      #setWithDeps @regions, id, r, deps
+
 
   initialize: ->
-    @grid.observe (x, y) => didChange @grid.depFor x, y
+    @grid.observe (x, y, v) =>
+      didChange @grid.depFor x, y
 
-    eachFwd @grid, (x, y, v) =>
-      return unless v
+      if v is 'nothing'
+        for {dx, dy} in dirs
+          r = @regionAtCell.get x+dx, y+dy
+          if r then @regionDestroy r
+        @genRegions x, y
+      else
+        r = @regionAtCell.get x, y
+        @regionDestroy r, x, y
 
-      if v in ['nothing', 'thinshuttle']
-        return if @regionAtCell.get x, y
-
-        id = "r#{@id()}"
-        console.log "making #{id} at", x, y
-
-        r =
-          id: id
-          size: 0
-
-        deps = []
-
-        fill {x,y}, (x, y) =>
-          v = @grid.get x, y
-          deps.push @grid.depFor x, y
-          if v in ['nothing', 'thinshuttle']
-            @regionAtCell.set x, y, r
-            r.size++
-
-            yes
-          else
-            no
-
-        #log 'deps', deps
-        #@regions[id] = r
-        setWithDeps @regions, id, r, deps
+    eachFwd @grid, @genRegions
 
     log @regions
 
-    @grid.set 1, 2, null
+    #@grid.set 1, 1, 'nothing'
+    @grid.set 1, 3, 'nothing'
 
     log 'rrrrr', @regions
 
