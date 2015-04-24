@@ -1,6 +1,6 @@
 {parseXY, fill} = util = require './util'
 {Watcher, txn} = require './watch'
-Map2 = require './map2'
+{Map2, Set2} = require './collections2'
 log = require './log'
 assert = require 'assert'
 mersenne = require 'mersenne'
