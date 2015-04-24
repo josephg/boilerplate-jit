@@ -16,6 +16,10 @@ exports.txn = (fn) ->
 
 exports.Watcher = class Watcher
   constructor: (@forEach) ->
+    if typeof @forEach isnt 'function'
+      container = @forEach
+      @forEach = (fn) -> container.forEach fn
+
     @observers = []
     @heldSignals = []
 

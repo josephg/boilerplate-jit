@@ -36,42 +36,38 @@ pressureOf = (v) -> if v is 'positive' then 1 else -1
 
 abs = (x) -> if x < 0 then -x else x
 
-class Grid extends Map2
-  constructor: ->
-    super()
-    @watch = new Watcher (fn) => @forEach fn
-
-  set: (x, y, v) ->
-    oldValue = @get x, y
-
-    if v
-      super x, y, v
-    else
-      @delete x, y
-
-    if oldValue != v then @watch.signal(x, y)
-
 class Jit
   id: -> @nextId++
 
   # This is some scary / baller shit right here.
-  set: (x, y, v) -> @grid.set x, y, v
+  set: (x, y, v) ->
+    oldValue = @grid.get x, y
+    return if oldValue == v
+
+    if v
+      @grid.set x, y, v
+    else
+      @grid.delete x, y
+
+    @grid.watch.signal x, y
 
   constructor: (rawGrid, @opts = {}) ->
     @nextId = 1
 
-    @grid = new Grid()
+    @grid = new Map2
+    @grid.watch = new Watcher @grid
+
     for k, v of rawGrid when k not in ['tw', 'th']
       {x,y} = parseXY k
       @grid.set x, y, v
 
-    @engineGrid = new Grid
+    @engineGrid = new Map2
 
     @shuttles = new Set
-    @shuttles.watch = new Watcher (fn) => @shuttles.forEach fn
+    @shuttles.watch = new Watcher @shuttles
     # This just has the base location of shuttles. Its only useful to find &
     # kill shuttles when they change.
-    @shuttleGrid = new Grid
+    @shuttleGrid = new Map2
 
     # Map from shuttle -> [shuttleState]
     @shuttleStates = new Map
@@ -106,7 +102,7 @@ class Jit
         @engineGrid.set x, y, engine
       else
         # Destroy any engine that was here
-        @engineGrid.set x, y, null
+        @engineGrid.delete x, y
 
 
   # ------- Grid -> Shuttles --------
@@ -273,26 +269,33 @@ class Jit
 
 
   torture: ->
-      for [1...1000]
-        txn =>
-          for [1...10]
-            x = mersenne.rand() % 4
-            y = mersenne.rand() % 4
-            VALUES = ['nothing', null, 'positive', 'negative', 'shuttle', 'thinshuttle']
-            v = VALUES[mersenne.rand() % VALUES.length]
-            log 'set', x, y, v
-            @grid.set x, y, v
-        @debugPrint()
-        log '-----'
+    for [1...1000]
+      txn =>
+        for [1...10]
+          x = mersenne.rand() % 4
+          y = mersenne.rand() % 4
+          VALUES = ['nothing', null, 'positive', 'negative', 'shuttle', 'thinshuttle']
+          v = VALUES[mersenne.rand() % VALUES.length]
+          log 'set', x, y, v
+          @set x, y, v
+      @debugPrint()
+      log '-----'
 
-        try
-          @check()
-        catch e
-          @debugPrint()
-          throw e
+      try
+        @check()
+      catch e
+        @debugPrint()
+        throw e
 
     
 parseFile = exports.parseFile = (filename, opts) ->
+  torture =
+    if filename in ['-t', 'torture']
+      filename = 'simple.json'
+      yes
+    else
+      no
+
   fs = require 'fs'
   data = JSON.parse fs.readFileSync(filename, 'utf8').split('\n')[0]
   # Mmmm, resiliancy.
@@ -300,7 +303,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
-  #jit.torture()
+  jit.torture() if torture
   
 
 
