@@ -1,5 +1,6 @@
 {parseXY, fill} = util = require './util'
 {Watcher, txn} = require './watch'
+Map2 = require './map2'
 log = require './log'
 assert = require 'assert'
 mersenne = require 'mersenne'
@@ -35,36 +36,20 @@ pressureOf = (v) -> if v is 'positive' then 1 else -1
 
 abs = (x) -> if x < 0 then -x else x
 
-
-class Grid
+class Grid extends Map2
   constructor: ->
-    @rows = new Map
+    super()
     @watch = new Watcher (fn) => @forEach fn
-
-  get: (x, y) ->
-    row = @rows.get x
-    return row.get y if row
 
   set: (x, y, v) ->
     oldValue = @get x, y
-    row = @rows.get x
-    if !row
-      row = new Map
-      @rows.set x, row
 
     if v
-      row.set y, v
+      super x, y, v
     else
-      row.delete y
+      @delete x, y
 
     if oldValue != v then @watch.signal(x, y)
-
-  forEach: (fn) ->
-    @rows.forEach (row, x) ->
-      row.forEach (v, y) ->
-        fn x, y, v
-
-
 
 class Jit
   id: -> @nextId++
@@ -93,6 +78,8 @@ class Jit
     @shuttleStates.watch = new Watcher (fn) =>
       @shuttleStates.forEach (states, shuttle) ->
         fn shuttle, state for state in states
+
+    
 
     @gridToEnginesInit()
     @gridToShuttleInit()
