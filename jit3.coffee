@@ -29,6 +29,7 @@ edges = [
 ]
 
 
+letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
 
 oppositeDir = (dir) -> (dir+2) % 4
 
@@ -47,6 +48,48 @@ randomWeighted = (arr) ->
       break if r < 0
 
     v
+
+
+# Iterate through all states in the sidList, calling fn on each.
+permuteStates = (shuttleStates, filledStates, fn) ->
+  # First, find which shuttles are in play here.
+  shuttles = []
+  marked = new WeakSet
+  filledStates.forEach ({shuttle}) ->
+    # The filledStates list will have shuttles multiple times. The set is used
+    # to uniq them.
+    if !marked.has shuttle
+      marked.add shuttle
+      shuttles.push shuttle
+
+  # Now lets find out the cross product of those shuttles' states
+  totalNumber = 1
+  for s in shuttles
+    assert s.used
+    totalNumber *= shuttleStates.get(s).length
+
+  activeStates = new Map # Map from shuttle -> state for bound states
+  for i in [0...totalNumber]
+    v = i
+    usable = yes
+    for s in shuttles
+      states = shuttleStates.get(s)
+      state = states[v % states.length]
+      v = (v / states.length)|0
+
+      if filledStates.has(state)
+        log 'unusable' #, activeStates, state
+        usable = no
+        break
+      else
+        activeStates.set s, state
+
+    if usable
+      log 'state set', activeStates
+      fn activeStates
+
+  return
+
 
 
 class Jit
@@ -82,7 +125,7 @@ class Jit
     # kill shuttles when they change.
     @shuttleGrid = new Map2
 
-    # Map from shuttle -> [shuttleState]
+    # Map from shuttle -> [state]
     @shuttleStates = new Map
     @shuttleStates.watch = new Watcher (fn) =>
       @shuttleStates.forEach (states, shuttle) ->
@@ -91,12 +134,15 @@ class Jit
     @fillList = new Map2 # Map from (x,y) -> set of states
     @fillList.watch = new Watcher @fillList # Emit (x, y, new list).
 
+    @regionGrid = new Map2 # Map from (x,y) -> each set of states -> region
+    #@regions = new Set # All the regions. (Is this needed?)
 
 
     @gridToEnginesInit()
     @gridToShuttleInit()
     @shuttleToStatesInit()
     @fillListInit()
+    @regionsInit()
 
 
     #@engines.forEach (x, y, v) -> log x, y, v
@@ -191,12 +237,25 @@ class Jit
         @shuttleStates.delete shuttle
         @shuttleStates.watch.signalImm shuttle, state, no for state in states
 
+    #@grid.watch.on (x, y) ->
+    #  v = @grid.get x, y
+
+    # Here we need to find any states that contain (x,y) and regenerate them
+    # 
+    # Also we need to regen the flags on any state bordering on this grid cell.
+
   canShuttleFitAt: (shuttle, dx, dy) ->
     shuttle.points.forEach (x, y) =>
       # The grid cell is un-enterable.
-      if @grid.get(x+dx, y+dy) not in ['shuttle', 'thinshuttle', 'nothing']
+      if !letsShuttleThrough @grid.get(x+dx, y+dy)
         return no
     return yes
+
+  calcFlags: (shuttle, dx, dy) ->
+    flags = 0
+    for {dx:ddx, dy:ddy}, i in DIRS
+      flags |= (1<<i) if @canShuttleFitAt shuttle, dx + ddx, dy + ddy
+    flags
 
   createStateAt: (shuttle, dx, dy) ->
     # First check that a state can exist here. Not entirely sure this check is
@@ -205,14 +264,10 @@ class Jit
     # - Anywhere else, we have flags on each state created
     return null unless @canShuttleFitAt shuttle, dx, dy
 
-    flags = 0
-    for {dx:ddx, dy:ddy}, i in DIRS
-      flags |= (1<<i) if @canShuttleFitAt shuttle, dx + ddx, dy + ddy
-
     state =
       dx: dx
       dy: dy
-      flags: flags
+      flags: @calcFlags shuttle, dx, dy
       successor: [-1, -1, -1, -1]
       shuttle: shuttle
 
@@ -273,6 +328,14 @@ class Jit
           log 'removing state from', x, y
           @fillList.watch.signal x, y, set
 
+  # ------- fill list -> regions --------
+
+  regionsInit: ->
+    @fillList.watch.on (x, y, states) =>
+      log 'fill list', x, y, states
+
+      permuteStates @shuttleStates, states, (activeStates) ->
+        log 'active states', activeStates
 
 
 
