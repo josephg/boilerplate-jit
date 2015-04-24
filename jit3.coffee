@@ -57,7 +57,7 @@ class Grid
     else
       row.delete y
 
-    if oldValue != v then @watch.signal(x, y, v)
+    if oldValue != v then @watch.signal(x, y)
 
   forEach: (fn) ->
     @rows.forEach (row, x) ->
@@ -73,7 +73,6 @@ class Jit
   set: (x, y, v) -> @grid.set x, y, v
 
   constructor: (rawGrid, @opts = {}) ->
-    util.printGrid (util.gridExtents rawGrid), rawGrid
     @nextId = 1
 
     @grid = new Grid()
@@ -84,51 +83,34 @@ class Jit
     @engineGrid = new Grid
 
     @shuttles = new Set
-    @shuttles.watch = new Watcher (fn) -> @shuttles.forEach fn
+    @shuttles.watch = new Watcher (fn) => @shuttles.forEach fn
     # This just has the base location of shuttles. Its only useful to find &
     # kill shuttles when they change.
     @shuttleGrid = new Grid
 
+    # Map from shuttle -> [shuttleState]
+    @shuttleStates = new Map
+    @shuttleStates.watch = new Watcher (fn) =>
+      @shuttleStates.forEach (states, shuttle) ->
+        fn shuttle, state for state in states
 
-    destroyShuttle = (x, y) =>
-      s = @shuttleGrid.get x, y
-      return no unless s?.used
-      log 'destroying shuttle', s
-      s.used = no
-      @shuttles.delete s
-      @shuttles.watch.signalImm s
-      return yes
+    @gridToEnginesInit()
+    @gridToShuttleInit()
+    @shuttleToStatesInit()
 
-    makeShuttle = (x, y) =>
-      #log 'makeShuttle at', x, y, @grid.get(x, y)
-      return unless @grid.get(x, y) in ['shuttle', 'thinshuttle']
-      return if (@shuttleGrid.get x, y)?.used
 
-      s =
-        id: "s#{@id()}"
-        used: yes
-        states: []
-        size: 0 # For debugging
+    #@engines.forEach (x, y, v) -> log x, y, v
 
-      @shuttles.add s
+    log '----'
+    @debugPrint()
+    
+    #log @shuttles
+    #@shuttleGrid.forEach (x, y, v) -> log x, y, v
 
-      fill {x, y}, (x, y) =>
-        destroyShuttle x, y
-
-        if @grid.get(x, y) in ['shuttle', 'thinshuttle']
-          @shuttleGrid.set x, y, s
-          s.size++
-          yes
-        else
-          no
-
-      throw Error 'empty' unless s.size
-
-      log 'added shuttle', s
-      @shuttles.watch.signal s
-
-    @grid.watch.on (x, y, v) =>
-      v = @grid.get x, y # needed for txns
+  # ------- Grid -> Engines --------
+  gridToEnginesInit: ->
+    @grid.watch.on (x, y) =>
+      v = @grid.get x, y
 
       if v in ['positive', 'negative']
         engine =
@@ -139,21 +121,113 @@ class Jit
         # Destroy any engine that was here
         @engineGrid.set x, y, null
 
+
+  # ------- Grid -> Shuttles --------
+  gridToShuttleInit: ->
+    @grid.watch.on (x, y) =>
+      v = @grid.get x, y
+
       if v in ['shuttle', 'thinshuttle']
-        makeShuttle x, y
+        @makeShuttle x, y
       else
-        destroyShuttle x, y
+        @destroyShuttle x, y
         # There might have been a shuttle nearby. Try and make some.
         # This is always needed like this because of txns. :(
         for {dx, dy} in DIRS
-          makeShuttle x+dx, y+dy
+          @makeShuttle x+dx, y+dy
+
+  destroyShuttle: (x, y) ->
+    s = @shuttleGrid.get x, y
+    return no unless s?.used
+    log 'destroying shuttle', s
+    s.used = no
+    @shuttles.delete s
+    @shuttles.watch.signalImm s
+    return yes
+
+  makeShuttle: (x, y) ->
+    #log 'makeShuttle at', x, y, @grid.get(x, y)
+    return unless @grid.get(x, y) in ['shuttle', 'thinshuttle']
+    return if (@shuttleGrid.get x, y)?.used
+
+    s =
+      id: "s#{@id()}"
+      used: yes
+      size: 0 # For debugging
+      points: []
+
+    @shuttles.add s
+
+    fill {x, y}, (x, y) =>
+      @destroyShuttle x, y
+
+      if @grid.get(x, y) in ['shuttle', 'thinshuttle']
+        @shuttleGrid.set x, y, s
+        s.size++
+        s.points.push {x, y}
+        yes
+      else
+        no
+
+    throw Error 'empty' unless s.size
+
+    log 'added shuttle', s
+    @shuttles.watch.signal s
 
 
-    #@engines.forEach (x, y, v) -> log x, y, v
+  # ------- Shuttles -> State --------
+  shuttleToStatesInit: ->
+    @shuttles.watch.on (shuttle) =>
+      log 'qs', shuttle
+      if shuttle.used
+        # The shuttle has just been made. Make a fresh shuttle state list for
+        # it.
+        @createStateAt shuttle, 0, 0
+      else
+        @shuttleStates.delete shuttle
 
-    
-    log @shuttles
-    @shuttleGrid.forEach (x, y, v) -> log x, y, v
+  canShuttleFitAt: (shuttle, dx, dy) ->
+    for {x, y} in shuttle.points
+      # The grid cell is un-enterable.
+      if @grid.get(x+dx, y+dy) not in ['shuttle', 'thinshuttle', 'nothing']
+        return no
+    return yes
+
+  createStateAt: (shuttle, dx, dy) ->
+    # First check that a state can exist here. Not entirely sure this check is
+    # needed given that:
+    # - At 0,0 the shuttle will always fit
+    # - Anywhere else, we have flags on each state created
+    return null unless @canShuttleFitAt shuttle, dx, dy
+
+    flags = 0
+    for {dx:ddx, dy:ddy}, i in DIRS
+      flags |= (1<<i) if @canShuttleFitAt shuttle, dx + ddx, dy + ddy
+
+    state =
+      dx: dx
+      dy: dy
+      flags: flags
+      successor: [-1, -1, -1, -1]
+
+    states = @shuttleStates.get shuttle
+    if states
+      states.push state
+    else
+      @shuttleStates.set shuttle, [state]
+
+    @shuttleStates.watch.signal shuttle, state
+    log 'created new state', state
+
+    state
+
+    ###
+    for {x, y} in shuttle.points
+      v = @grid.get x, y
+      assert v in ['shuttle', 'thinshuttle']
+
+      x += dx; y += dy
+    ###
 
 
 
@@ -175,6 +249,7 @@ class Jit
     @shuttles.forEach (s) ->
       assert s.used
       assert s.size
+    #-Invariant: Points list matches
 
     #ENGINES:
     # Invariant: Each engine cell is in the engineGrid
@@ -184,10 +259,22 @@ class Jit
         assert e
         # Invariant: Each engine's pressure is correct
         assert e.pressure is pressureOf v
-
     # Invariant: Each engine in the engineGrid corresponds to +/-
     @engineGrid.forEach (x, y, e) =>
       assert @grid.get(x, y) in ['positive', 'negative']
+
+    #STATES:
+    # Invariant: There is a shuttle state list for all shuttles
+    @shuttles.forEach (s) =>
+      states = @shuttleStates.get s
+      assert states
+      assert states.length >= 1
+      #for state in states
+
+    # Invariant: There is no shuttle state list for unused shuttles
+    @shuttleStates.forEach (states, s) =>
+      assert s.used
+    
 
   debugPrint: ->
     crapGrid = {}
@@ -226,7 +313,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
-  jit.torture()
+  #jit.torture()
   
 
 
