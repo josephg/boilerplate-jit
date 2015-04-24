@@ -36,6 +36,19 @@ pressureOf = (v) -> if v is 'positive' then 1 else -1
 
 abs = (x) -> if x < 0 then -x else x
 
+
+randomWeighted = (arr) ->
+  totalWeight = 0
+  totalWeight += arr[i+1] for _, i in arr by 2
+  ->
+    r = mersenne.rand() % totalWeight
+    for v,i in arr by 2
+      r -= arr[i+1]
+      break if r < 0
+
+    v
+
+
 class Jit
   id: -> @nextId++
 
@@ -346,13 +359,21 @@ class Jit
 
 
   torture: ->
+    randomValue = randomWeighted [
+      null, 2
+      'nothing', 10
+      'positive', 1
+      'negative', 1
+      'shuttle', 1
+      'thinshuttle', 1
+    ]
+
     for [1...1000]
       txn =>
         for [1...10]
           x = mersenne.rand() % 4
           y = mersenne.rand() % 4
-          VALUES = ['nothing', null, 'positive', 'negative', 'shuttle', 'thinshuttle']
-          v = VALUES[mersenne.rand() % VALUES.length]
+          v = randomValue()
           log 'set', x, y, v
           @set x, y, v
       @debugPrint()
