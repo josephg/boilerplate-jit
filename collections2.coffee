@@ -31,6 +31,11 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
       inner.forEach (v, k2) ->
         fn k1, k2, v
 
+  inspect: ->
+    data = {}
+    @forEach (k1, k2, v) -> data[[k1,k2]] = v
+    data
+
 
 exports.Set2 = class Set2 # A set of (a,b) values
   constructor: (data) ->
