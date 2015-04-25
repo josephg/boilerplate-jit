@@ -31,7 +31,7 @@ Grid = (rawGrid) ->
   forEach: (fn) -> grid.forEach fn
 
 
-ShuttleBuffer = (grid) ->
+GridBuffer = (match, grid) ->
   # A set of all the cells which are shuttle / thinshuttle and haven't been
   # processed.
   buffer = new Map2
@@ -39,7 +39,7 @@ ShuttleBuffer = (grid) ->
   watch = new Watcher
 
   grid.watch.forward (x, y, oldv, v) ->
-    if oldv in ['shuttle', 'thinshuttle']
+    if oldv in match
       if buffer.has x, y
         # The consumer doesn't know about this value yet. Just remove it from
         # the buffer.
@@ -49,25 +49,23 @@ ShuttleBuffer = (grid) ->
         # new value (if needed).
         signal = yes
 
-    if v in ['shuttle', 'thinshuttle']
+    if v in match
       buffer.set x, y, v
 
     if signal
       watch.signal x, y
 
   watch: watch
-
-  peek: (x, y) -> buffer.get x, y
-  peekAll: (fn) -> buffer.forEach fn
-
+  buffer: buffer
   pump: (x, y) ->
     v = buffer.get x, y
     if v
       buffer.delete x, y
     return v
 
+Shuttles = (grid) ->
+  shuttleBuffer = GridBuffer ['shuttle', 'thinshuttle'], grid
 
-Shuttles = (shuttleBuffer) ->
   shuttles = new Set
   shuttleGrid = new Map2 # x,y -> shuttle.
   watch = new Watcher
@@ -75,9 +73,11 @@ Shuttles = (shuttleBuffer) ->
   shuttleBuffer.watch.on (x, y) ->
     s = shuttleGrid.get x, y
     if shuttles.delete s
-      log 'Destroyed shuttle at', x, y
+      log 'Destroyed shuttle at', x, y, s.id
       assert s.used
       s.used = no
+      s.points.forEach (x2, y2, v) ->
+        shuttleBuffer.buffer.set x2, y2, v if x2 != x || y2 != y
 
       watch.signal s
 
@@ -89,7 +89,7 @@ Shuttles = (shuttleBuffer) ->
     log 'makeShuttle at', x, y
     #v = shuttleBuffer.peek x, y
     #return unless v in ['shuttle', 'thinshuttle']
-    assert shuttleBuffer.peek(x, y) in ['shuttle', 'thinshuttle']
+    assert shuttleBuffer.buffer.get(x, y) in ['shuttle', 'thinshuttle']
 
     s =
       id: "s#{makeId()}"
@@ -116,26 +116,39 @@ Shuttles = (shuttleBuffer) ->
 
 
   forEach: (fn) ->
-    shuttleBuffer.peekAll (x, y, v) ->
+    shuttleBuffer.buffer.forEach (x, y, v) ->
       makeShuttle x, y
 
     shuttles.forEach fn
 
   get: (x, y) ->
-    if shuttleBuffer.peek x, y
+    if shuttleBuffer.buffer.get x, y
       makeShuttle x, y
 
     s = shuttleGrid.get x, y
     return s if s?.used
 
 
+
+
+
+
 Jit = (rawGrid) ->
   grid = Grid rawGrid
-  shuttleBuffer = ShuttleBuffer grid
-  shuttles = Shuttles shuttleBuffer
+  #engineBuffer = GridBuffer ['positive', 'negative'], grid
+
+  shuttles = Shuttles grid
 
   shuttles.forEach (s) ->
     log 'shuttle', s
+
+  grid.set 3, 0, null
+
+  shuttles.forEach (s) ->
+    log 's2', s
+
+
+
 
  
 parseFile = exports.parseFile = (filename, opts) ->
