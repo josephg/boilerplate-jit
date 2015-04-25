@@ -13,6 +13,8 @@ exports.txn = (fn) ->
       pendingWatchers.forEach (watch) ->
         watch.flush()
 
+sentSignals = 0
+process.on 'exit', -> log 'ss', sentSignals
 
 exports.Watcher = class Watcher
   constructor: (@forEach) ->
@@ -28,6 +30,7 @@ exports.Watcher = class Watcher
     @observers.push fn
 
   signalImm: (args...) ->
+    sentSignals++
     o(args...) for o in @observers
     return
 
