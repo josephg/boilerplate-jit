@@ -1,4 +1,5 @@
 {inspect} = require 'util'
+assert = require 'assert'
 
 # Monkey patch inspect functions for Map and Set
 Map::inspect ?= (depth, options) ->
@@ -16,6 +17,7 @@ Set::inspect ?= (depth, options) ->
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
     @levelOne = new Map
+    @size = 0
     if typeof data is 'function'
       @makeDefault = data
     else if data
@@ -39,11 +41,19 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
       inner = new Map
       @levelOne.set k1, inner
 
+    @size -= inner.size
     inner.set k2, v
+    @size += inner.size
+    return this
 
   delete: (k1, k2) ->
     inner = @levelOne.get k1
-    inner.delete k2 if inner
+    if inner
+      deleted = inner.delete k2
+      @size-- if deleted
+      return deleted
+    else
+      return no
 
   forEach: (fn) ->
     @levelOne.forEach (inner, k1) ->
@@ -57,12 +67,14 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
     entries = []
     @forEach (k1, k2, v) ->
       entries.push "#{inspect k1, options},#{inspect k2, options} : #{inspect v, options}"
+    assert entries.length == @size
     "{[Map2] #{entries.join ', '} }"
 
 
 exports.Set2 = class Set2 # A set of (a,b) values
   constructor: (data) ->
     @levelOne = new Map
+    @size = 0
     if data
       for [v1, v2] in data
         @add v1, v2
@@ -79,11 +91,19 @@ exports.Set2 = class Set2 # A set of (a,b) values
       inner = new Set
       @levelOne.set v1, inner
 
+    @size -= inner.size
     inner.add v2
+    @size += inner.size
+    return this
 
   delete: (v1, v2) ->
     inner = @levelOne.get v1
-    inner.delete v2 if inner
+    if inner
+      deleted = inner.delete v2
+      @size-- if deleted
+      return deleted
+    else
+      return no
 
   forEach: (fn) ->
     @levelOne.forEach (inner, v1) ->
@@ -97,5 +117,7 @@ exports.Set2 = class Set2 # A set of (a,b) values
     entries = []
     @forEach (v1, v2) ->
       entries.push "(#{inspect v1, options},#{inspect v2, options})"
+
+    assert entries.length == @size
     "{[Set2] #{entries.join ', '} }"
 
