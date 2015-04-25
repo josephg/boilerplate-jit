@@ -1,33 +1,77 @@
 # This jit is designed as an ecosystem of signaling parts.
-
-
 Watcher = require './watch2'
-{Map2, Set2} = require './collections2'
-{parseXY, fill} = util = require './util2'
+{Map2, Map3, Set2, Set3} = require './collections2'
+{parseXY, fill, fillCells, DIRS} = util = require './util2'
 log = require './log'
 assert = require 'assert'
+mersenne = require 'mersenne'
 
 makeId = do ->
   nextId = 1
   -> nextId++
 
-UP=0; RIGHT=1; DOWN=2; LEFT=3
-DN =
-  0: 'UP'
-  1: 'RIGHT'
-  2: 'DOWN'
-  3: 'LEFT'
 
-DIRS = [
-  {dx:0, dy:-1}
-  {dx:1, dy:0}
-  {dx:0, dy:1}
-  {dx:-1, dy:0}
-]
+randomWeighted = (arr) ->
+  totalWeight = 0
+  totalWeight += arr[i+1] for _, i in arr by 2
+  ->
+    r = mersenne.rand() % totalWeight
+    for v,i in arr by 2
+      r -= arr[i+1]
+      break if r < 0
 
-oppositeDir = (dir) -> (dir+2) % 4
+    v
+
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
+
+# Iterate through all states in the sidList, calling fn on each.
+permuteStates = (shuttleStates, filledStates, fn) ->
+  # First, find which shuttles are in play here. Its important that we iterate
+  # through the shuttles in a stable order, so we'll throw everything into
+  # lists.
+  shuttles = []
+  shuttleStatesList = new Map
+  marked = new WeakSet
+  totalNumber = 1
+  filledStates.forEach ({shuttle}) ->
+    assert shuttle.used
+    # The filledStates list will have shuttles multiple times. The set is used
+    # to uniq them.
+    if !marked.has shuttle
+      marked.add shuttle
+      shuttles.push shuttle
+
+      # We also need the states in a stable ordered list.
+      states = []
+      shuttleStates.get(shuttle).forEach(dx, dy, state) ->
+        states.push state if state.valid
+      shuttleStatesList.set shuttle, states
+
+      # We also need to find out the cross product of those shuttles' states
+      totalNumber *= states.length
+
+  activeStates = new Map # Map from shuttle -> state for bound states
+  for i in [0...totalNumber]
+    v = i
+    usable = yes
+    for s in shuttles
+      states = shuttleStatesList.get(s)
+      state = states[v % states.length]
+      v = (v / states.length)|0
+
+      if filledStates.has(state)
+        log 'unusable' #, activeStates, state
+        usable = no
+        break
+      else
+        activeStates.set s, state
+
+    if usable
+      log 'state set', activeStates
+      fn activeStates
+
+  return
 
 
 Grid = (rawGrid) ->
@@ -59,23 +103,22 @@ GridBuffer = (match, grid) ->
 
   grid.watch.forward (x, y, oldv, v) ->
     if oldv in match
-      if buffer.has x, y
-        # The consumer doesn't know about this value yet. Just remove it from
-        # the buffer.
-        buffer.delete x, y
-      else
-        # Its been consumed. Signal - but only after we set the buffer to the
-        # new value (if needed).
-        signal = yes
+      watch.signal x, y if !buffer.has x, y # Reclaim the old value
+
+      # Then get rid of it.
+      buffer.delete x, y
 
     if v in match
+      # Reap adjacent cells. This might be special for shuttles?
+      watch.signal x+dx, y+dy for {dx, dy} in DIRS
       buffer.set x, y, v
 
-    if signal
-      watch.signal x, y
+    # Technically we don't need to signal if the consumer hasn't consumed this
+    # value and we deleted it. But signaling anyway is simpler and shouldn't
+    # cause problems.
 
   watch: watch
-  buffer: buffer
+  data: buffer
   pump: (x, y) ->
     v = buffer.get x, y
     if v
@@ -83,31 +126,36 @@ GridBuffer = (match, grid) ->
     return v
 
 Shuttles = (grid) ->
-  shuttleBuffer = GridBuffer ['shuttle', 'thinshuttle'], grid
+  buffer = GridBuffer ['shuttle', 'thinshuttle'], grid
 
   shuttles = new Set
   shuttleGrid = new Map2 # x,y -> shuttle.
   watch = new Watcher
 
-  shuttleBuffer.watch.on (x, y) ->
-    s = shuttleGrid.get x, y
-    if shuttles.delete s
-      log 'Destroyed shuttle at', x, y, s.id
-      assert s.used
-      s.used = no
-      # Put the points we ate back in the buffer.
-      s.points.forEach (x2, y2, v) ->
-        shuttleBuffer.buffer.set x2, y2, v if x2 != x || y2 != y
+  buffer.watch.on (x, y) ->
+    deleteShuttleAt x, y
 
-      watch.signal s
+  deleteShuttleAt = (x, y) ->
+    s = shuttleGrid.get x, y
+    return no unless shuttles.delete s
+
+    log "Destroyed shuttle #{s.id} at", x, y
+    assert s.used
+    s.used = no
+    # Put the points we ate back in the buffer.
+    s.points.forEach (x2, y2, v) ->
+      buffer.data.set x2, y2, v
+
+    watch.signal s
+    return yes
 
   makeShuttle = (x, y) ->
     #log 'makeShuttle at', x, y
-    #v = shuttleBuffer.peek x, y
-    assert shuttleBuffer.buffer.get(x, y) in ['shuttle', 'thinshuttle']
+    #v = buffer.peek x, y
+    assert buffer.data.get(x, y) in ['shuttle', 'thinshuttle']
 
     s =
-      id: "s#{makeId()}"
+      id: makeId()
       used: yes
       size: 0 # For debugging
       points: new Map2
@@ -115,7 +163,7 @@ Shuttles = (grid) ->
     shuttles.add s
 
     fill x, y, (x, y) =>
-      v = shuttleBuffer.pump x, y
+      v = buffer.pump x, y
       return no unless v
 
       shuttleGrid.set x, y, s
@@ -132,13 +180,13 @@ Shuttles = (grid) ->
   watch: watch
 
   forEach: (fn) ->
-    shuttleBuffer.buffer.forEach (x, y, v) ->
+    buffer.data.forEach (x, y, v) ->
       makeShuttle x, y
 
     shuttles.forEach fn
 
   get: (x, y) ->
-    if shuttleBuffer.buffer.get x, y
+    if buffer.data.get x, y
       makeShuttle x, y
 
     s = shuttleGrid.get x, y
@@ -151,6 +199,29 @@ Shuttles = (grid) ->
     # with the current state).
     throw Error 'not implemented'
 
+  check: (invasive) ->
+    @forEach(->) if invasive
+
+    shuttleGrid.forEach (x, y, s) ->
+      return unless s.used
+      # - No two different shuttles should be adjacent to each other
+      for {dx, dy} in DIRS
+        s2 = shuttleGrid.get x+dx, y+dy
+        assert s2 is s if s2?.used
+
+    shuttles.forEach (s) =>
+      assert s.used
+      s.points.forEach (x, y, p) =>
+        # - Shuttles are represented in the grid
+        s2 = shuttleGrid.get(x, y)
+        assert.equal s, s2 if s2?.used
+        assert.equal @get(x, y), s
+        # - Shuttles always have all adjacent shuttle / thinshuttle points
+        for {dx, dy} in DIRS when !s.points.has x+dx,y+dy
+          v2 = grid.get x+dx, y+dy
+          assert v2 not in ['shuttle', 'thinshuttle']
+
+
 ShuttleStates = (grid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
   # entry (the shuttle's starting state). States are added when the shuttle
@@ -160,7 +231,7 @@ ShuttleStates = (grid, shuttles) ->
   watch = new Watcher (fn) ->
     shuttleStates.forEach (shuttle, states) ->
       states.forEach (x, y, state) ->
-        fn shuttle, state, yes
+        fn state, yes
 
   shuttles.watch.on (shuttle) ->
     # Shuttle delete messages
@@ -168,7 +239,7 @@ ShuttleStates = (grid, shuttles) ->
     if states
       shuttleStates.delete shuttle
       states.forEach (x, y, state) ->
-        watch.signal shuttle, state, no
+        watch.signal state, no
 
   canShuttleFitAt = (shuttle, dx, dy) ->
     shuttle.points.forEach (x, y) =>
@@ -178,29 +249,41 @@ ShuttleStates = (grid, shuttles) ->
     return yes
 
   createStateAt = (shuttle, dx, dy) ->
+    states = shuttleStates.get shuttle
+
     state =
       dx: dx
       dy: dy
       valid: canShuttleFitAt shuttle, dx, dy
       shuttle: shuttle
+      id: if states then states.size else 0
 
-    states = shuttleStates.get shuttle
     if states
       states.set dx, dy, state
     else
       shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
     log 'created new state', state
-    watch.signal shuttle, state, yes
+    watch.signal state, yes
     return state
+
+  flushStatesAt: (x, y) ->
+    # Its kind of gross that I need this. Anyone listening on our watcher will
+    # see states as they get created, but a shuttle might not have been created
+    # yet (because of how the shuttle group works).
+    #
+    # NEVER CALL ME on a burning pass - or you might get wacky N^2 behaviour.
+    s = shuttles.get x, y
+    @get s if s
 
   watch: watch
   get: (s) ->
     shuttleStates.get(s) or (createStateAt(s, 0, 0, []); shuttleStates.get s)
 
-  getStartingState: (s) -> @get(s).get(0,0)
+  getInitialState: (s) -> @get(s).get(0,0)
 
-  getStateNear: (shuttle, state, dir) -> # Dir is a number.
+  getStateNear: (state, dir) -> # Dir is a number.
+    assert state.shuttle.used
     return null unless state.valid
 
     {dx, dy} = DIRS[dir]
@@ -208,7 +291,7 @@ ShuttleStates = (grid, shuttles) ->
     successor = shuttleStates.get(s).get dx, dy
 
     if successor is null
-      successor = createStateAt shuttle, dx, dy
+      successor = createStateAt state.shuttle, dx, dy
 
     return successor
 
@@ -216,22 +299,161 @@ ShuttleStates = (grid, shuttles) ->
 FillGrid = (shuttleStates) ->
   # Set of states which fill a given grid cell
   fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
+
+  # The fill key is used for cell groups. Every adjacent grid cell with the
+  # same fill key will always have the same pressure value regardless of
+  # shuttle state. For now, the key is just a (stable) list of the states in
+  # the fill grid.
+  fillKey = new Map2 # Map from (x,y) -> string key
+
   watch = new Watcher
 
-  shuttleStates.watch.forward (shuttle, state, created) ->
+  shuttleStates.watch.forward (state, created) ->
+    #log 'shuttleStates signal', state, created
     if created
       # Populate the fill list
-      shuttle.points.forEach (x, y, v) ->
+      state.shuttle.points.forEach (x, y, v) ->
         if v is 'shuttle' and state.valid
           x += state.dx; y += state.dy
           fillGrid.get(x, y).add state
+          fillKey.delete x, y
           watch.signal x, y
     else
-      shuttle.points.forEach (x, y, v) ->
+      state.shuttle.points.forEach (x, y, v) ->
         if v is 'shuttle' and state.valid
           x += state.dx; y += state.dy
           fillGrid.get(x, y).delete state
+          fillKey.delete x, y
           watch.signal x, y
+
+  calcKeyAt = (x, y) ->
+    stateList = []
+    fillGrid.get(x, y).forEach (state) -> stateList.push state
+    stateList.sort (s1, s2) ->
+      if s1.shuttle != s2.shuttle
+        s1.shuttle.id - s2.shuttle.id
+      else
+        s1.id - s2.id
+
+    key = stateList
+      .map (state) -> "#{state.shuttle.id}.#{state.id}"
+      .join ' '
+
+  watch: watch
+  getFillKey: (x, y) ->
+    shuttleStates.flushStatesAt x, y
+    key = fillKey.get x, y
+    if !key
+      key = calcKeyAt x, y
+      fillKey.set x, y, key
+    return key
+
+CellGroup = (grid, fillGrid) ->
+  # The first step to calculating regions is finding similar cells. Similar
+  # cells are neighboring cells which will always (come hell or high water)
+  # contain the same regions.
+  #
+  # This is very similar to shuttles, but instead of flood filling on connected
+  # shuttle cells, we'll connect cells which have the same FillGrid.
+
+  # (x, y, cell) -> cell value
+  pendingCells = new Set3 # I really don't care what these are.
+
+  # (x, y, cell) -> group
+  groupGrid = new Map3
+  groups = new Set
+
+  watch = new Watcher
+
+  grid.watch.forward (x, y, oldV, v) ->
+    cmax = util.cellMax oldV
+    for c in [0...cmax]
+      deleteGroupAt x, y, c
+      pendingCells.delete x, y, c
+
+    cmax = util.cellMax v
+    for c in [0...cmax]
+      pendingCells.add x, y, c
+
+  fillGrid.watch.on (x, y) ->
+    v = grid.get x, y
+    cmax = util.cellMax v
+    deleteGroupAt x, y, c for c in [0...cmax]
+
+  deleteGroupAt = (x, y, c) ->
+    group = groupGrid.get x, y, c
+    return unless group
+    log 'deleting group', group
+
+    # Invalidate g!
+    group.used = no # More for debugging than anything.
+    groups.delete group
+    watch.signal group
+
+    # Recycle the points
+    group.points.forEach (px, py, pc, pv) ->
+      pendingCells.add px, py, pc
+      groupGrid.delete px, py, pc
+
+
+  makeGroupAt = (x, y, c) ->
+    assert pendingCells.has x, y, c
+    group =
+      used: yes
+      size: 0 # For debugging
+      points: new Map3
+
+    key = fillGrid.getFillKey x, y
+
+    #log 'makeGroupAt', x, y, c, key
+
+    fillCells grid, x, y, c, (x, y, c, v) ->
+      return no unless fillGrid.getFillKey(x, y) == key
+
+      group.points.set x, y, c, v
+      group.size++
+      assert !groupGrid.has x, y, c
+      groupGrid.set x, y, c, group
+      assert pendingCells.has x, y, c
+      pendingCells.delete x, y, c
+
+      return yes
+
+    groups.add group
+    log 'made group', group
+    return group
+
+
+  get: (x, y, c) ->
+    cellGroups = groupGrid.get x, y, c
+    g = cellGroups[cell]
+
+    if !g
+      v = grid.get x, y
+      assert 0 <= c < util.cellMax(v)
+
+      # I don't think there's really any value in which we don't make a cell
+      # group. I mean, its dumb making a group underneath an
+      # immovable shuttle - but who's counting?
+      if v?
+        g = makeGroupAt x, y, cell
+
+    return g
+
+  forEach: (fn) ->
+    # This is an interesting function - more useful for debugging than anything
+    # else. By fetching all groups, you'll force them all to get generated. Not
+    # something you ever really want to do - but eh.
+    pendingCells.forEach (x, y, c) ->
+      makeGroupAt x, y, c
+
+    groups.forEach fn
+
+
+GroupConnections = (cellGroups) ->
+  # So, here we track & report on connections between groups
+
+
 
 StateGrid = (shuttleStates) ->
   # This maps x,y -> a set of shuttles which sometimes occupy this region
@@ -245,17 +467,23 @@ StateGrid = (shuttleStates) ->
   stateGrid = new Map2 -> new Set
   watch = new Watcher
 
-  shuttleStates.watch.forward (shuttle, state, created) ->
+  shuttleStates.watch.forward (state, created) ->
     if created
-      shuttle.points.forEach (x, y, v) ->
+      state.shuttle.points.forEach (x, y, v) ->
         x += state.dx; y += state.dy
-        stateGrid.get(x, y).add shuttle
+        stateGrid.get(x, y).add state.shuttle
         watch.signal x, y
     else
-      shuttle.points.forEach (x, y, v) ->
+      state.shuttle.points.forEach (x, y, v) ->
         x += state.dx; y += state.dy
-        stateGrid.get(x, y).delete shuttle
+        stateGrid.get(x, y).delete state.shuttle
         watch.signal x, y
+
+#StateEdge = (shuttleStates) ->
+  # The edge of a shuttle is a set of grid cells (x, y, cell) which may
+
+Regions = ->
+  # The region grid is lovely. This maps from (x,y) -> cell# (usually direction) -> 
 
 
 Jit = (rawGrid) ->
@@ -266,18 +494,78 @@ Jit = (rawGrid) ->
   shuttleStates = ShuttleStates grid, shuttles
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
+  cellGroup = CellGroup grid, fillGrid
 
   shuttles.forEach (s) ->
     log 'shuttle', s
+  grid.set 2,0, 'shuttle'
+  shuttles.forEach (s) ->
+    log 'shuttle', s
+
+  #grid.set 3, 0, null
+
+
+  #cellGroup.forEach (group) ->
+  #  log 'group', group
+
+
+
+  ###
+
+
+  currentState = new Map
+  dangerousShuttles = new Set # Shuttles which might move next tick
+  shuttles.forEach (s) ->
+    currentState.set s, shuttleStates.getInitialState(s)
+    dangerousShuttles.add s
+  
+  grid.forEach (x, y, v) ->
+    log 'fillKey', x, y, fillGrid.getFillKey x, y
 
   grid.set 3, 0, null
+  grid.forEach (x, y, v) ->
+    log 'fillKey', x, y, fillGrid.getFillKey x, y
 
-  shuttles.forEach (s) ->
-    log 's2', s
-    log shuttleStates.get s
+  step: ->
+    dangerousShuttles.forEach (s) ->
+      # 1. Calculate up/down force
+      #   - Get all neighboring zones given current state
+      #
+      #
+      # 2. Try and move up/down if needed
+      #
+      # 3. Calculate left/right force
+      # 4. Try and move left/right, ...
 
+  ###
 
+  torture: ->
+    randomValue = randomWeighted [
+      null, 2
+      'nothing', 10
+      'positive', 1
+      'negative', 1
+      'shuttle', 1
+      'thinshuttle', 1
+    ]
 
+    for iter in [1...1000]
+      log "----- iter #{iter}"
+      for [1...10]
+        x = mersenne.rand() % 4
+        y = mersenne.rand() % 4
+        v = randomValue()
+        log 'set', x, y, v
+        grid.set x, y, v
+
+      #@debugPrint()
+
+      try
+        shuttles.check true
+      catch e
+        log '****** CRASH ******'
+        #@debugPrint()
+        throw e
 
  
 parseFile = exports.parseFile = (filename, opts) ->
@@ -295,7 +583,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
-  #jit.torture() if torture
+  jit.torture() if torture
   
 
 
