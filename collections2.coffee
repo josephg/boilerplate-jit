@@ -1,3 +1,17 @@
+{inspect} = require 'util'
+
+# Monkey patch inspect functions for Map and Set
+Map::inspect ?= (depth, options) ->
+  return '[Map]' if depth < 0
+  entries = []
+  @forEach (v, k) -> entries.push "#{inspect k, options} : #{inspect v, options}"
+  "{[Map] #{entries.join ', '} }"
+
+Set::inspect ?= (depth, options) ->
+  return '[Set]' if depth < 0
+  entries = []
+  @forEach (v) -> entries.push "#{inspect v, options}"
+  "{[Set] #{entries.join ', '} }"
 
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
@@ -36,10 +50,14 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
       inner.forEach (v, k2) ->
         fn k1, k2, v
 
-  inspect: ->
-    data = {}
-    @forEach (k1, k2, v) -> data[[k1,k2]] = v
-    data
+  clear: -> @levelOne.clear()
+
+  inspect: (depth, options) ->
+    return '[Map2]' if depth < 0
+    entries = []
+    @forEach (k1, k2, v) ->
+      entries.push "#{inspect k1, options},#{inspect k2, options} : #{inspect v, options}"
+    "{[Map2] #{entries.join ', '} }"
 
 
 exports.Set2 = class Set2 # A set of (a,b) values
@@ -72,4 +90,12 @@ exports.Set2 = class Set2 # A set of (a,b) values
       inner.forEach (v2) ->
         fn v1, v2
 
+  clear: -> @levelOne.clear()
+
+  inspect: (depth, options) ->
+    return '[Set2]' if depth < 0
+    entries = []
+    @forEach (v1, v2) ->
+      entries.push "(#{inspect v1, options},#{inspect v2, options})"
+    "{[Set2] #{entries.join ', '} }"
 
