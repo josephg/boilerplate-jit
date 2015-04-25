@@ -81,6 +81,26 @@ exports.cellMax = (v) ->
     when null then 0
     else 1
 
+connectedCells = exports.connectedCells = (grid, x, y, c) ->
+  # Returns a list of cells (list of lists)
+  v = grid.get x, y
+  dirs = switch v
+    when 'bridge'
+      if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
+    when 'positive', 'negative'
+      [c]
+    when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
+      [UP, RIGHT, DOWN, LEFT]
+    else
+      [] # Nothing is connected to nothin'.
+
+  cells = []
+  for d in dirs
+    cell = cellOpposite grid, x, y, d
+    cells.push cell if cell
+  cells
+
+
 # Flood fill through the grid from a cell
 exports.fillCells = (grid, initialX, initialY, initialC, f) ->
   visited = new Set3 [[initialX, initialY, initialC]]
@@ -99,19 +119,8 @@ exports.fillCells = (grid, initialX, initialY, initialC, f) ->
     continue unless v # No walls.
     if f x, y, c, v, hmm
       # Hmm for each potentially adjacent cell.
-      dirs = switch v
-        when 'bridge'
-          if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
-        when 'positive', 'negative'
-          [c]
-        when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
-          [UP, RIGHT, DOWN, LEFT]
-
-
-      for d in dirs
-        cell = cellOpposite grid, x, y, d
-        if cell
-          hmm cell[0], cell[1], cell[2]||0
+      for [x2, y2, c2] in connectedCells grid, x, y, c
+        hmm x2, y2, c2||0
 
   return
 

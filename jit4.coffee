@@ -365,21 +365,6 @@ CellGroup = (grid, fillGrid) ->
 
   watch = new Watcher
 
-  grid.watch.forward (x, y, oldV, v) ->
-    cmax = util.cellMax oldV
-    for c in [0...cmax]
-      deleteGroupAt x, y, c
-      pendingCells.delete x, y, c
-
-    cmax = util.cellMax v
-    for c in [0...cmax]
-      pendingCells.add x, y, c
-
-  fillGrid.watch.on (x, y) ->
-    v = grid.get x, y
-    cmax = util.cellMax v
-    deleteGroupAt x, y, c for c in [0...cmax]
-
   deleteGroupAt = (x, y, c) ->
     group = groupGrid.get x, y, c
     return unless group
@@ -395,6 +380,25 @@ CellGroup = (grid, fillGrid) ->
       pendingCells.add px, py, pc
       groupGrid.delete px, py, pc
 
+  grid.watch.forward (x, y, oldV, v) ->
+    cmax = util.cellMax oldV
+    for c in [0...cmax]
+      deleteGroupAt x, y, c
+      pendingCells.delete x, y, c
+
+    for {dx, dy} in DIRS
+      cmax = util.cellMax grid.get x+dx, y+dy
+      for c in [0...cmax]
+        deleteGroupAt x+dx, y+dy, c
+
+    cmax = util.cellMax v
+    for c in [0...cmax]
+      pendingCells.add x, y, c
+
+  fillGrid.watch.on (x, y) ->
+    v = grid.get x, y
+    cmax = util.cellMax v
+    deleteGroupAt x, y, c for c in [0...cmax]
 
   makeGroupAt = (x, y, c) ->
     assert pendingCells.has x, y, c
@@ -402,31 +406,35 @@ CellGroup = (grid, fillGrid) ->
       used: yes
       size: 0 # For debugging
       points: new Map3
+      edges: new Set3 # x, y, c
 
     key = fillGrid.getFillKey x, y
 
     #log 'makeGroupAt', x, y, c, key
 
     fillCells grid, x, y, c, (x, y, c, v) ->
-      return no unless fillGrid.getFillKey(x, y) == key
+      #log 'fillCells', x, y, c, v
+      if fillGrid.getFillKey(x, y) == key
+        group.points.set x, y, c, v
+        group.size++
+        assert !groupGrid.has x, y, c
+        groupGrid.set x, y, c, group
+        assert pendingCells.has x, y, c
+        pendingCells.delete x, y, c
+        return yes
+      else
+        group.edges.add x, y, c
+        return no
 
-      group.points.set x, y, c, v
-      group.size++
-      assert !groupGrid.has x, y, c
-      groupGrid.set x, y, c, group
-      assert pendingCells.has x, y, c
-      pendingCells.delete x, y, c
-
-      return yes
 
     groups.add group
     log 'made group', group
     return group
 
+  watch: watch
 
   get: (x, y, c) ->
-    cellGroups = groupGrid.get x, y, c
-    g = cellGroups[cell]
+    g = groupGrid.get x, y, c
 
     if !g
       v = grid.get x, y
@@ -436,7 +444,7 @@ CellGroup = (grid, fillGrid) ->
       # group. I mean, its dumb making a group underneath an
       # immovable shuttle - but who's counting?
       if v?
-        g = makeGroupAt x, y, cell
+        g = makeGroupAt x, y, c
 
     return g
 
@@ -452,7 +460,28 @@ CellGroup = (grid, fillGrid) ->
 
 GroupConnections = (cellGroups) ->
   # So, here we track & report on connections between groups
+  connections = new Map # Map from group -> set of groups it touches
 
+  cellGroups.watch.on (group) ->
+    connections.delete group
+
+  findConnections = (group) ->
+    gc = new Set
+    group.edges.forEach (x, y, c) ->
+      g2 = cellGroups.get x, y, c
+      assert g2
+      assert g2.used
+      gc.add g2
+
+    connections.set group, gc
+    gc
+
+
+  get: (group) ->
+    gc = connections.get group
+    if !gc
+      gc = findConnections group
+    return gc
 
 
 StateGrid = (shuttleStates) ->
@@ -495,16 +524,23 @@ Jit = (rawGrid) ->
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
   cellGroup = CellGroup grid, fillGrid
+  groupConnections = GroupConnections cellGroup
 
-  shuttles.forEach (s) ->
-    log 'shuttle', s
-  grid.set 2,0, 'shuttle'
-  shuttles.forEach (s) ->
-    log 'shuttle', s
+
+  #shuttles.forEach (s) ->
+  #  log 'shuttle', s
+  #grid.set 2,0, 'shuttle'
+  #shuttles.forEach (s) ->
+  #  log 'shuttle', s
 
   #grid.set 3, 0, null
 
 
+  cellGroup.forEach (group) ->
+    log 'group', group
+    log 'connections', groupConnections.get group
+  log '----'
+  #grid.set 0, 1, 'nothing'
   #cellGroup.forEach (group) ->
   #  log 'group', group
 
