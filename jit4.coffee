@@ -11,6 +11,17 @@ makeId = do ->
   nextId = 1
   -> nextId++
 
+
+DIRS = [
+  {dx:0, dy:-1}
+  {dx:1, dy:0}
+  {dx:0, dy:1}
+  {dx:-1, dy:0}
+]
+
+letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
+
+
 Grid = (rawGrid) ->
   grid = new Map2
   watch = new Watcher (fn) ->
@@ -76,19 +87,15 @@ Shuttles = (grid) ->
       log 'Destroyed shuttle at', x, y, s.id
       assert s.used
       s.used = no
+      # Put the points we ate back in the buffer.
       s.points.forEach (x2, y2, v) ->
         shuttleBuffer.buffer.set x2, y2, v if x2 != x || y2 != y
 
       watch.signal s
 
-      # ??
-      #s.points.forEach (x, y) ->
-      #  shuttleGrid.delete x, y
-
   makeShuttle = (x, y) ->
-    log 'makeShuttle at', x, y
+    #log 'makeShuttle at', x, y
     #v = shuttleBuffer.peek x, y
-    #return unless v in ['shuttle', 'thinshuttle']
     assert shuttleBuffer.buffer.get(x, y) in ['shuttle', 'thinshuttle']
 
     s =
@@ -114,6 +121,7 @@ Shuttles = (grid) ->
     log 'added shuttle', s
     return s
 
+  watch: watch
 
   forEach: (fn) ->
     shuttleBuffer.buffer.forEach (x, y, v) ->
@@ -128,8 +136,95 @@ Shuttles = (grid) ->
     s = shuttleGrid.get x, y
     return s if s?.used
 
+  collapse: (s) ->
+    # When any cells are edited along a shuttle's path, we should move the
+    # shuttle into its current position (its current state) in the grid. This
+    # will force the shuttle to be regenerated (along with its states, starting
+    # with the current state).
+    throw Error 'not implemented'
+
+ShuttleStates = (grid, shuttles) ->
+  # The set of shuttle states. A shuttle's state list starts off with just one
+  # entry (the shuttle's starting state). States are added when the shuttle
+  # moves
+  shuttleStates = new Map # shuttle -> [states]
+
+  # Set of states which fill a given grid cell
+  fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
+
+  # This maps x,y -> a set of shuttles which sometimes occupy this region
+  # (including in invalid states)
+  # Its different from fillList in three ways:
+  #  1. It maps to the shuttle, not the shuttle state
+  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
+  #  3. It includes invalid states
+  #
+  # Its used to find & kill shuttles when the grid changes.
+  stateGrid = new Map2 -> new Set
+
+  watch = new Watcher
+
+  shuttles.watch.on (s) -> deleteStatesForShuttle s
+
+  deleteStatesForShuttle = (shuttle) ->
+    states = shuttleStates.get shuttle
+    return unless states
+
+    shuttleStates.delete shuttle
+
+    states.forEach (state) ->
+      shuttle.points.forEach (x, y, v) ->
+        x += state.dx; y += state.dy
+
+        set = stateGrid.get x, y
+        set.delete shuttle
+
+        if state.valid and v is 'shuttle'
+          set = fillList.get x, y
+          set.delete state
+
+    watch.signal shuttle, states
+
+  canShuttleFitAt = (shuttle, dx, dy) ->
+    shuttle.points.forEach (x, y) =>
+      # The grid cell is un-enterable.
+      if !letsShuttleThrough grid.get(x+dx, y+dy)
+        return no
+    return yes
+
+  createStateAt = (shuttle, dx, dy) ->
+    state =
+      dx: dx
+      dy: dy
+      valid: @canShuttleFitAt shuttle, dx, dy
+      successor: [-1, -1, -1, -1]
+      shuttle: shuttle
+
+    states = shuttleStates.get shuttle
+    if states
+      states.push state
+    else
+      @shuttleStates.set shuttle, [state]
+
+    # Populate the fill list & state grid.
+    shuttle.points.forEach (x, y, v) ->
+      assert v in ['shuttle', 'thinshuttle']
+      x += state.dx; y += state.dy
+
+      log "adding #{v} to fill / state list at", x, y
+
+      stateGrid.get(x, y).add shuttle
+
+      if v is 'shuttle' and state.valid
+        fillList.get(x, y).add state
+
+    log 'created new state', state
+
+    state
 
 
+  watch: watch
+  forEach: (s) ->
 
 
 
@@ -138,6 +233,7 @@ Jit = (rawGrid) ->
   #engineBuffer = GridBuffer ['positive', 'negative'], grid
 
   shuttles = Shuttles grid
+  shuttleStates = ShuttleStates grid, shuttles
 
   shuttles.forEach (s) ->
     log 'shuttle', s
