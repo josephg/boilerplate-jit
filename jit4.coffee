@@ -463,7 +463,12 @@ GroupConnections = (cellGroups) ->
   connections = new Map # Map from group -> set of groups it touches
 
   cellGroups.watch.on (group) ->
-    connections.delete group
+    if (gc = connections.get group)
+      connections.delete group
+      # Also any groups we've cached which connect to the deleted group will
+      # need to be regenerated.
+      gc.forEach (g2) ->
+        connections.delete g2
 
   findConnections = (group) ->
     gc = new Set
@@ -540,7 +545,11 @@ Jit = (rawGrid) ->
     log 'group', group
     log 'connections', groupConnections.get group
   log '----'
-  #grid.set 0, 1, 'nothing'
+  grid.set 6, 2, 'nothing'
+  log '----'
+  cellGroup.forEach (group) ->
+    log 'group', group
+    log 'connections', groupConnections.get group
   #cellGroup.forEach (group) ->
   #  log 'group', group
 
