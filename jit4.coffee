@@ -11,6 +11,12 @@ makeId = do ->
   nextId = 1
   -> nextId++
 
+UP=0; RIGHT=1; DOWN=2; LEFT=3
+DN =
+  0: 'UP'
+  1: 'RIGHT'
+  2: 'DOWN'
+  3: 'LEFT'
 
 DIRS = [
   {dx:0, dy:-1}
@@ -18,6 +24,8 @@ DIRS = [
   {dx:0, dy:1}
   {dx:-1, dy:0}
 ]
+
+oppositeDir = (dir) -> (dir+2) % 4
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
 
@@ -147,43 +155,20 @@ ShuttleStates = (grid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
   # entry (the shuttle's starting state). States are added when the shuttle
   # moves
-  shuttleStates = new Map # shuttle -> [states]
+  shuttleStates = new Map # shuttle -> Map2(dx, dy) -> states
 
-  # Set of states which fill a given grid cell
-  fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
+  watch = new Watcher (fn) ->
+    shuttleStates.forEach (shuttle, states) ->
+      states.forEach (x, y, state) ->
+        fn shuttle, state, yes
 
-  # This maps x,y -> a set of shuttles which sometimes occupy this region
-  # (including in invalid states)
-  # Its different from fillList in three ways:
-  #  1. It maps to the shuttle, not the shuttle state
-  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
-  #  3. It includes invalid states
-  #
-  # Its used to find & kill shuttles when the grid changes.
-  stateGrid = new Map2 -> new Set
-
-  watch = new Watcher
-
-  shuttles.watch.on (s) -> deleteStatesForShuttle s
-
-  deleteStatesForShuttle = (shuttle) ->
+  shuttles.watch.on (shuttle) ->
+    # Shuttle delete messages
     states = shuttleStates.get shuttle
-    return unless states
-
-    shuttleStates.delete shuttle
-
-    states.forEach (state) ->
-      shuttle.points.forEach (x, y, v) ->
-        x += state.dx; y += state.dy
-
-        set = stateGrid.get x, y
-        set.delete shuttle
-
-        if state.valid and v is 'shuttle'
-          set = fillList.get x, y
-          set.delete state
-
-    watch.signal shuttle, states
+    if states
+      shuttleStates.delete shuttle
+      states.forEach (x, y, state) ->
+        watch.signal shuttle, state, no
 
   canShuttleFitAt = (shuttle, dx, dy) ->
     shuttle.points.forEach (x, y) =>
@@ -196,36 +181,81 @@ ShuttleStates = (grid, shuttles) ->
     state =
       dx: dx
       dy: dy
-      valid: @canShuttleFitAt shuttle, dx, dy
-      successor: [-1, -1, -1, -1]
+      valid: canShuttleFitAt shuttle, dx, dy
       shuttle: shuttle
 
     states = shuttleStates.get shuttle
     if states
-      states.push state
+      states.set dx, dy, state
     else
-      @shuttleStates.set shuttle, [state]
-
-    # Populate the fill list & state grid.
-    shuttle.points.forEach (x, y, v) ->
-      assert v in ['shuttle', 'thinshuttle']
-      x += state.dx; y += state.dy
-
-      log "adding #{v} to fill / state list at", x, y
-
-      stateGrid.get(x, y).add shuttle
-
-      if v is 'shuttle' and state.valid
-        fillList.get(x, y).add state
+      shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
     log 'created new state', state
-
-    state
-
+    watch.signal shuttle, state, yes
+    return state
 
   watch: watch
-  forEach: (s) ->
+  get: (s) ->
+    shuttleStates.get(s) or (createStateAt(s, 0, 0, []); shuttleStates.get s)
 
+  getStartingState: (s) -> @get(s).get(0,0)
+
+  getStateNear: (shuttle, state, dir) -> # Dir is a number.
+    return null unless state.valid
+
+    {dx, dy} = DIRS[dir]
+    dx += state.dx; dy += state.dy
+    successor = shuttleStates.get(s).get dx, dy
+
+    if successor is null
+      successor = createStateAt shuttle, dx, dy
+
+    return successor
+
+
+FillGrid = (shuttleStates) ->
+  # Set of states which fill a given grid cell
+  fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
+  watch = new Watcher
+
+  shuttleStates.watch.forward (shuttle, state, created) ->
+    if created
+      # Populate the fill list
+      shuttle.points.forEach (x, y, v) ->
+        if v is 'shuttle' and state.valid
+          x += state.dx; y += state.dy
+          fillGrid.get(x, y).add state
+          watch.signal x, y
+    else
+      shuttle.points.forEach (x, y, v) ->
+        if v is 'shuttle' and state.valid
+          x += state.dx; y += state.dy
+          fillGrid.get(x, y).delete state
+          watch.signal x, y
+
+StateGrid = (shuttleStates) ->
+  # This maps x,y -> a set of shuttles which sometimes occupy this region
+  # (including in invalid states)
+  # Its different from fillList in three ways:
+  #  1. It maps to the shuttle, not the shuttle state
+  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
+  #  3. It includes invalid states
+  #
+  # Its used to find & kill shuttles when the grid changes.
+  stateGrid = new Map2 -> new Set
+  watch = new Watcher
+
+  shuttleStates.watch.forward (shuttle, state, created) ->
+    if created
+      shuttle.points.forEach (x, y, v) ->
+        x += state.dx; y += state.dy
+        stateGrid.get(x, y).add shuttle
+        watch.signal x, y
+    else
+      shuttle.points.forEach (x, y, v) ->
+        x += state.dx; y += state.dy
+        stateGrid.get(x, y).delete shuttle
+        watch.signal x, y
 
 
 Jit = (rawGrid) ->
@@ -234,6 +264,8 @@ Jit = (rawGrid) ->
 
   shuttles = Shuttles grid
   shuttleStates = ShuttleStates grid, shuttles
+  fillGrid = FillGrid shuttleStates
+  stateGrid = StateGrid shuttleStates
 
   shuttles.forEach (s) ->
     log 'shuttle', s
@@ -242,6 +274,7 @@ Jit = (rawGrid) ->
 
   shuttles.forEach (s) ->
     log 's2', s
+    log shuttleStates.get s
 
 
 
