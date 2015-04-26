@@ -10,7 +10,6 @@ makeId = do ->
   nextId = 1
   -> nextId++
 
-
 randomWeighted = (arr) ->
   totalWeight = 0
   totalWeight += arr[i+1] for _, i in arr by 2
@@ -22,56 +21,7 @@ randomWeighted = (arr) ->
 
     v
 
-
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
-
-# Iterate through all states in the sidList, calling fn on each.
-permuteStates = (shuttleStates, filledStates, fn) ->
-  # First, find which shuttles are in play here. Its important that we iterate
-  # through the shuttles in a stable order, so we'll throw everything into
-  # lists.
-  shuttles = []
-  shuttleStatesList = new Map
-  marked = new WeakSet
-  totalNumber = 1
-  filledStates.forEach ({shuttle}) ->
-    assert shuttle.used
-    # The filledStates list will have shuttles multiple times. The set is used
-    # to uniq them.
-    if !marked.has shuttle
-      marked.add shuttle
-      shuttles.push shuttle
-
-      # We also need the states in a stable ordered list.
-      states = []
-      shuttleStates.get(shuttle).forEach(dx, dy, state) ->
-        states.push state if state.valid
-      shuttleStatesList.set shuttle, states
-
-      # We also need to find out the cross product of those shuttles' states
-      totalNumber *= states.length
-
-  activeStates = new Map # Map from shuttle -> state for bound states
-  for i in [0...totalNumber]
-    v = i
-    usable = yes
-    for s in shuttles
-      states = shuttleStatesList.get(s)
-      state = states[v % states.length]
-      v = (v / states.length)|0
-
-      if filledStates.has(state)
-        log 'unusable' #, activeStates, state
-        usable = no
-        break
-      else
-        activeStates.set s, state
-
-    if usable
-      log 'state set', activeStates
-      fn activeStates
-
-  return
 
 
 Grid = (rawGrid) ->
@@ -158,6 +108,7 @@ Shuttles = (grid) ->
       id: makeId()
       used: yes
       size: 0 # For debugging
+      numValidStates: 0
       points: new Map2
 
     shuttles.add s
@@ -251,12 +202,14 @@ ShuttleStates = (grid, shuttles) ->
   createStateAt = (shuttle, dx, dy) ->
     states = shuttleStates.get shuttle
 
+    valid = canShuttleFitAt shuttle, dx, dy
     state =
       dx: dx
       dy: dy
-      valid: canShuttleFitAt shuttle, dx, dy
+      valid: valid
       shuttle: shuttle
-      id: if states then states.size else 0
+      id: if valid then shuttle.numValidStates else -1
+    shuttle.numValidStates++ if valid
 
     if states
       states.set dx, dy, state
@@ -299,6 +252,10 @@ ShuttleStates = (grid, shuttles) ->
 FillGrid = (shuttleStates) ->
   # Set of states which fill a given grid cell
   fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
+  pointWatch = new Watcher
+
+  # Note: It might be worth splitting this module up into two - one for the
+  # fill grid and another for the keys.
 
   # The fill key is used for cell groups. Every adjacent grid cell with the
   # same fill key will always have the same pressure value regardless of
@@ -314,7 +271,7 @@ FillGrid = (shuttleStates) ->
   keysReferencingState = new WeakMap
   keysReferencingState.default = -> new Set
 
-  watch = new Watcher
+  keyWatch = new Watcher
 
   shuttleStates.watch.forward (state, created) ->
     #log 'shuttleStates signal', state, created
@@ -325,16 +282,17 @@ FillGrid = (shuttleStates) ->
           x += state.dx; y += state.dy
           fillGrid.get(x, y).add state
           fillKey.delete x, y
-          watch.signal x, y
+          pointWatch.signal x, y
     else
       state.shuttle.points.forEach (x, y, v) ->
         if v is 'shuttle' and state.valid
           x += state.dx; y += state.dy
           fillGrid.get(x, y).delete state
           fillKey.delete x, y
-          watch.signal x, y
+          pointWatch.signal x, y
       keysReferencingState.get(state)?.forEach (key) ->
         fillStates.delete key
+        keyWatch.signal key
 
   calcKeyAt = (x, y) ->
     stateList = []
@@ -360,8 +318,9 @@ FillGrid = (shuttleStates) ->
 
     return key
 
-  getFillStates: (key) -> fillStates.get key
-  watch: watch
+  getFilledStates: (key) -> fillStates.get key
+  pointWatch: pointWatch
+  keyWatch: keyWatch
   getFillKey: (x, y) ->
     shuttleStates.flushStatesAt x, y
     key = fillKey.get x, y
@@ -370,7 +329,7 @@ FillGrid = (shuttleStates) ->
       fillKey.set x, y, key
     return key
 
-CellGroup = (grid, fillGrid) ->
+CellGroups = (grid, fillGrid) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
   # contain the same regions.
@@ -417,7 +376,7 @@ CellGroup = (grid, fillGrid) ->
     for c in [0...cmax]
       pendingCells.add x, y, c
 
-  fillGrid.watch.on (x, y) ->
+  fillGrid.pointWatch.on (x, y) ->
     v = grid.get x, y
     cmax = util.cellMax v
     deleteGroupAt x, y, c for c in [0...cmax]
@@ -425,13 +384,17 @@ CellGroup = (grid, fillGrid) ->
   makeGroupAt = (x, y, c) ->
     assert pendingCells.has x, y, c
     key = fillGrid.getFillKey x, y
+    filledStates = fillGrid.getFilledStates key
+    shuttles = util.uniqueShuttlesInStates filledStates
 
     group =
       used: yes
       size: 0 # For debugging
-      key: key # We could just request this out of fillGrid, but its handy.
+      fillKey: key # We could just request this out of fillGrid, but its handy.
       points: new Map3
       edges: new Set3 # x, y, c
+      shuttles: shuttles
+      shuttleKey: shuttles.map((s) -> "#{s.id}").join ' '
 
     #log 'makeGroupAt', x, y, c, key
 
@@ -451,7 +414,7 @@ CellGroup = (grid, fillGrid) ->
 
 
     groups.add group
-    log 'made group', group
+    #log 'made group', group
     return group
 
   watch: watch
@@ -574,8 +537,94 @@ StateGrid = (shuttleStates) ->
 #StateEdge = (shuttleStates) ->
   # The edge of a shuttle is a set of grid cells (x, y, cell) which may
 
-Regions = ->
-  # The region grid is lovely. This maps from (x,y) -> cell# (usually direction) -> 
+Regions = (fillGrid, cellGroups, groupConnections) ->
+  # The region grid is lovely. This maps from:
+  # group -> set of shuttle states -> region
+  regionsForGroup = new Map
+  regionsForGroup.default = (g) ->
+    shuttles = util.uniqueShuttlesInStates(fillGrid.getFilledStates g.fillKey)
+    new util.ShuttleStateMap shuttles
+
+  regions = new Set
+
+  watch = new Watcher
+
+  cellGroups.watch.on (group) ->
+    map = regionsForGroup.get group
+    return unless map
+    regionsForGroup.delete group
+
+    map.forEachValue (region) ->
+      deleteRegion region
+      watch.signal region
+
+  deleteRegion = (region) ->
+    region.used = no
+    region.groups.forEach (group) ->
+      regionsForGroup.get(group).delete region.states
+
+  createRegion = (group0, currentStates) ->
+    #log 'createRegion', group0
+    assert regionsForGroup.getDef(group0).isDefinedFor currentStates
+
+    shuttleKey = group0.shuttleKey
+
+    # A map of just the states that are referenced by the group
+    trimmedStates = new Set
+    invalid = no
+    group0.shuttles.forEach (s) ->
+      state = currentStates.get s
+      trimmedStates.add state
+      invalid = yes if fillGrid.getFilledStates(group0.fillKey).has state
+
+    # We were asked to create a region for a group with shuttle states that
+    # fill the group.
+    if invalid
+      # Null = this group is filled here; no region is possible.
+      regionsForGroup.getDef(group0).set currentStates, null
+      log '-> invalid'
+      return null
+
+    region =
+      used: yes
+      size: 0
+      groups: new Set
+      states: trimmedStates
+
+    util.fillGroups group0, (group) ->
+      # There's three reasons we won't connect a region across group lines:
+      # 1. We don't connect (in which case this won't be called)
+      # 2. The other group depends on more (or less) shuttles
+      return null if group.shuttleKey != shuttleKey
+
+      # 3. The other group is filled in one of my states
+      filledStates = fillGrid.getFilledStates group.fillKey
+      filled = no
+      trimmedStates.forEach (state) ->
+        filled = yes if filledStates.has state
+      return null if filled
+
+      # Ok, we're looking good.
+      regionsForGroup.getDef(group).set trimmedStates, region
+      region.size++
+      region.groups.add group
+
+      return groupConnections.get group
+      
+    assert region.size
+    regions.add region
+    region
+
+  get: (group, currentStates) ->
+    map = regionsForGroup.getDef group
+    region = map.get currentStates
+    return null if region is null # The group is filled right now.
+
+    if !region
+      region = createRegion group, currentStates
+
+    return region
+
 
 
 Jit = (rawGrid) ->
@@ -586,9 +635,9 @@ Jit = (rawGrid) ->
   shuttleStates = ShuttleStates grid, shuttles
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
-  cellGroup = CellGroup grid, fillGrid
-  groupConnections = GroupConnections cellGroup
-
+  cellGroups = CellGroups grid, fillGrid
+  groupConnections = GroupConnections cellGroups
+  regions = Regions fillGrid, cellGroups, groupConnections
 
   #shuttles.forEach (s) ->
   #  log 'shuttle', s
@@ -599,19 +648,19 @@ Jit = (rawGrid) ->
   #grid.set 3, 0, null
 
 
-  cellGroup.forEach (group) ->
-    log 'group', group
-    log 'connections', groupConnections.get group
+  cellGroups.forEach (group) ->
+    #log 'group', group
+    #log 'connections', groupConnections.get group
   log '----'
-  grid.set 6, 2, 'nothing'
+  #grid.set 6, 2, 'nothing'
   log '----'
-  cellGroup.forEach (group) ->
-    log 'group', group
-    log 'connections', groupConnections.get group
-  #cellGroup.forEach (group) ->
-  #  log 'group', group
 
+  currentState = new Map
+  shuttles.forEach (s) ->
+    currentState.set s, shuttleStates.getInitialState(s)
 
+  cellGroups.forEach (group) ->
+    #log 'region', regions.get group, currentState
 
   ###
 

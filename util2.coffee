@@ -1,5 +1,6 @@
 {Map2, Set2, Map3, Set3} = require './collections2'
 log = require './log'
+assert = require 'assert'
 
 chars =
   positive: '+'
@@ -123,4 +124,91 @@ exports.fillCells = (grid, initialX, initialY, initialC, f) ->
         hmm x2, y2, c2||0
 
   return
+
+
+exports.uniqueShuttlesInStates = (states) ->
+  shuttles = []
+  marked = new WeakSet
+  states.forEach ({shuttle}) ->
+    return if marked.has shuttle
+    marked.add shuttle
+    shuttles.push shuttle
+  shuttles.sort (a, b) -> a.id - b.id
+
+  shuttles
+
+
+exports.ShuttleStateMap = class ShuttleStateMap
+  constructor: (shuttleSet) ->
+    # First, find which shuttles are in play here. Its important that we iterate
+    # through the shuttles in a stable order, so we'll throw everything into
+    # lists.
+    @shuttles = []
+
+    shuttleSet.forEach (s) =>
+      assert s.used
+      @shuttles.push s
+
+    @values = undefined
+
+  each = (list, depth, fn) ->
+    if depth is 0
+      fn list depth if list?
+      return
+    depth--
+    each item, depth, fn for item in list when item
+
+  # Is the map defined for some subset of the states in the grid?
+  isDefinedFor: (currentStates) ->
+    for s in @shuttles
+      return no unless currentStates.has s
+    return yes
+
+  get: (currentStates) ->
+    container = @values
+    for s in @shuttles
+      return unless container
+
+      state = currentStates.get s
+      assert state # The state set doesn't define a value!
+      container = container[state.id]
+
+    return container
+
+  set: (currentStates, v) ->
+    return @values = v if @shuttles.length is 0 # optimization
+
+    key = 'values'
+    container = this
+
+    for s in @shuttles
+      state = currentStates.get s
+      throw Error 'ShuttleStateMap.set on an unbound set' unless state
+
+      if !container[key]
+        container = container[key] = []
+      else
+        container = container[key]
+      key = state.id
+
+    container[key] = v
+
+  delete: (currentStates) -> @set currentStates, undefined
+
+  # I can make a normal forEach too, but this is simpler and faster.
+  forEachValue: (fn) ->
+    each @values, @shuttles.length, fn
+
+exports.fillGroups = (initialGroup, f) ->
+  visited = new Set
+  explore = []
+
+  hmm = (group) ->
+    explore.push group if !visited.has group
+  hmm initialGroup
+
+  while explore.length > 0
+    group = explore.shift()
+    connections = f group
+    connections?.forEach hmm
 
