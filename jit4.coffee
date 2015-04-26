@@ -560,11 +560,12 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
   deleteRegion = (region) ->
     region.used = no
+    regions.delete region
     region.groups.forEach (group) ->
       regionsForGroup.get(group)?.delete region.states
 
   createRegion = (group0, currentStates) ->
-    log 'createRegion', group0, currentStates
+    #log 'createRegion', group0, currentStates
     assert regionsForGroup.getDef(group0).isDefinedFor currentStates
 
     shuttleKey = group0.shuttleKey
@@ -625,6 +626,13 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
     return region
 
+  check: ->
+    regions.forEach (r) ->
+      log 'check', r
+      assert r.used
+      assert r.size
+      r.groups.forEach (g) ->
+        assert g.used
 
 
 Jit = (rawGrid) ->
@@ -725,6 +733,8 @@ Jit = (rawGrid) ->
         cellGroups.forEach (group) ->
           r = regions.get group, currentState
           assert r is null || r.used
+        
+        regions.check()
 
       catch e
         log '****** CRASH ******'
