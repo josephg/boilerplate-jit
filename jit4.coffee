@@ -306,6 +306,14 @@ FillGrid = (shuttleStates) ->
   # the fill grid.
   fillKey = new Map2 # Map from (x,y) -> string key
 
+  # Set of the actual states which fill for a particular key
+  fillStates = new Map # Map from key -> set of states
+  fillStates.default = -> new Set
+  # For cleaning up fillStates when a state is removed.
+  # Map from state -> set of keys
+  keysReferencingState = new WeakMap
+  keysReferencingState.default = -> new Set
+
   watch = new Watcher
 
   shuttleStates.watch.forward (state, created) ->
@@ -325,6 +333,8 @@ FillGrid = (shuttleStates) ->
           fillGrid.get(x, y).delete state
           fillKey.delete x, y
           watch.signal x, y
+      keysReferencingState.get(state)?.forEach (key) ->
+        fillStates.delete key
 
   calcKeyAt = (x, y) ->
     stateList = []
@@ -339,6 +349,18 @@ FillGrid = (shuttleStates) ->
       .map (state) -> "#{state.shuttle.id}.#{state.id}"
       .join ' '
 
+    if !fillStates.has key
+      # It'd be nice to simply reference the same set as in fillGrid, but we
+      # can't - the set in fillGrid changes based on the states of that grid
+      # cell. This set is immutable.
+      set = fillStates.getDef key
+      set.add state for state in stateList
+    for state in stateList
+      keysReferencingState.getDef(state).add key
+
+    return key
+
+  getFillStates: (key) -> fillStates.get key
   watch: watch
   getFillKey: (x, y) ->
     shuttleStates.flushStatesAt x, y
@@ -402,13 +424,14 @@ CellGroup = (grid, fillGrid) ->
 
   makeGroupAt = (x, y, c) ->
     assert pendingCells.has x, y, c
+    key = fillGrid.getFillKey x, y
+
     group =
       used: yes
       size: 0 # For debugging
+      key: key # We could just request this out of fillGrid, but its handy.
       points: new Map3
       edges: new Set3 # x, y, c
-
-    key = fillGrid.getFillKey x, y
 
     #log 'makeGroupAt', x, y, c, key
 
@@ -527,7 +550,7 @@ GroupConnections = (cellGroups) ->
 StateGrid = (shuttleStates) ->
   # This maps x,y -> a set of shuttles which sometimes occupy this region
   # (including in invalid states)
-  # Its different from fillList in three ways:
+  # Its different from fillGrid in three ways:
   #  1. It maps to the shuttle, not the shuttle state
   #  2. It includes any shuttle which occupies a grid cell using thinshuttle
   #  3. It includes invalid states
