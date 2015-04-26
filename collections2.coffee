@@ -16,6 +16,13 @@ Set::inspect ?= (depth, options) ->
   @forEach (v) -> entries.push "#{inspect v, options}"
   "{[Set] #{entries.join ', '} }"
 
+Map::getDef = WeakMap::getDef = (k) ->
+  v = @get k
+  if !v?
+    v = @default k
+    @set k, v
+  return v
+
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
     @levelOne = new Map
