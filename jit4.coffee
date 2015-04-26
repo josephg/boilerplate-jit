@@ -459,34 +459,69 @@ CellGroup = (grid, fillGrid) ->
 
 
 GroupConnections = (cellGroups) ->
-  # So, here we track & report on connections between groups
+  # So, here we track & report on connections between groups. Groups are either
+  # complete or incomplete. Incomplete groups need to be regenerated if
+  # requested, but they are useful for garbage collection.
+
   connections = new Map # Map from group -> set of groups it touches
 
   cellGroups.watch.on (group) ->
     if (gc = connections.get group)
+      log 'deleting'
       connections.delete group
       # Also any groups we've cached which connect to the deleted group will
       # need to be regenerated.
       gc.forEach (g2) ->
-        connections.delete g2
+        set2 = connections.get g2
+        if set2
+          set2.complete = false
+          set2.delete group
 
   findConnections = (group) ->
     gc = new Set
+    gc.complete = true
     group.edges.forEach (x, y, c) ->
       g2 = cellGroups.get x, y, c
       assert g2
       assert g2.used
       gc.add g2
 
+      # And add a connection back. This is for garbage collection - if g2 gets
+      # deleted then get(group) is called, we need to regenerate the
+      # connections for group.
+      set2 = connections.get g2
+      if !set2
+        set2 = new Set
+        set2.complete = false
+        connections.set g2, set2
+      set2.add group
+
     connections.set group, gc
     gc
 
-
   get: (group) ->
     gc = connections.get group
-    if !gc
+    if !gc or !gc.complete
       gc = findConnections group
     return gc
+
+  check: (invasive) ->
+    if invasive
+      cellGroups.forEach (g) =>
+        set = @get g
+        assert set
+
+    connections.forEach (set, group) ->
+      assert set.complete if invasive
+      return unless set.complete
+      assert group.used
+      set.forEach (g2) ->
+        assert g2.used
+
+        found = no
+        group.edges.forEach (x, y, c) ->
+          found = yes if g2.points.has x, y, c
+        assert found
 
 
 StateGrid = (shuttleStates) ->
@@ -606,7 +641,9 @@ Jit = (rawGrid) ->
       #@debugPrint()
 
       try
-        shuttles.check true
+        invasive = iter % 2 == 0
+        shuttles.check invasive
+        groupConnections.check invasive
       catch e
         log '****** CRASH ******'
         #@debugPrint()
