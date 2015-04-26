@@ -153,7 +153,7 @@ exports.ShuttleStateMap = class ShuttleStateMap
 
   each = (list, depth, fn) ->
     if depth is 0
-      fn list depth if list?
+      fn list if list?
       return
     depth--
     each item, depth, fn for item in list when item

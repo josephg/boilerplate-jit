@@ -561,10 +561,10 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
   deleteRegion = (region) ->
     region.used = no
     region.groups.forEach (group) ->
-      regionsForGroup.get(group).delete region.states
+      regionsForGroup.get(group)?.delete region.states
 
   createRegion = (group0, currentStates) ->
-    #log 'createRegion', group0
+    log 'createRegion', group0, currentStates
     assert regionsForGroup.getDef(group0).isDefinedFor currentStates
 
     shuttleKey = group0.shuttleKey
@@ -701,6 +701,7 @@ Jit = (rawGrid) ->
       'thinshuttle', 1
     ]
 
+
     for iter in [1...1000]
       log "----- iter #{iter}"
       for [1...10]
@@ -716,6 +717,15 @@ Jit = (rawGrid) ->
         invasive = iter % 2 == 0
         shuttles.check invasive
         groupConnections.check invasive
+
+        currentState = new Map
+        shuttles.forEach (s) ->
+          currentState.set s, shuttleStates.getInitialState(s)
+
+        cellGroups.forEach (group) ->
+          r = regions.get group, currentState
+          assert r is null || r.used
+
       catch e
         log '****** CRASH ******'
         #@debugPrint()
