@@ -2,6 +2,7 @@
 # console.log in node. The signature is the same.
 
 log = module.exports = (args...) ->
+  return if log.quiet
   if typeof window is 'object'
     console.log args...
   else
@@ -13,3 +14,4 @@ log = module.exports = (args...) ->
         inspect a, {depth:5, colors:true}
     console.log args.map(f).join ' '
 
+log.quiet = false
