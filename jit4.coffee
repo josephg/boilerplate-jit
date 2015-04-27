@@ -154,7 +154,7 @@ BlobFiller = (type, grid) ->
       b.type = v
       b.pressure = (if v is 'positive' then 1 else -1) * b.size
 
-    log "Added #{type}", b
+    #log "Added #{type}", b
     return b
 
   watch: watch
@@ -427,10 +427,13 @@ CellGroups = (grid, fillGrid) ->
       edges: new Set3 # x, y, c
       shuttles: shuttles
       shuttleKey: shuttles.map((s) -> "#{s.id}").join ' '
+      # Does the group *only* have engine cells? They clutter up my logs and make me mad!
+      useless: true
 
     #log 'makeGroupAt', x, y, c, key
 
     fillCells grid, x, y, c, (x, y, c, v) ->
+      group.useless = no if v and v not in ['positive', 'negative']
       #log 'fillCells', x, y, c, v
       if fillGrid.getFillKey(x, y) == key
         group.points.set x, y, c, v
@@ -464,7 +467,7 @@ CellGroups = (grid, fillGrid) ->
       if v?
         g = makeGroupAt x, y, c
 
-    return g
+    return g if !g.useless
 
   forEach: (fn) ->
     # This is an interesting function - more useful for debugging than anything
@@ -473,7 +476,8 @@ CellGroups = (grid, fillGrid) ->
     pendingCells.forEach (x, y, c) ->
       makeGroupAt x, y, c
 
-    groups.forEach fn
+    groups.forEach (g) ->
+      fn g if !g.useless
 
 
 GroupConnections = (cellGroups) ->
@@ -693,8 +697,8 @@ module.exports = Jit = (rawGrid) ->
   regions = Regions fillGrid, cellGroups, groupConnections
 
 
-  engines.forEach (e) ->
-    log 'engine', e
+  #engines.forEach (e) ->
+  #  log 'engine', e
   #shuttles.forEach (s) ->
   #  log 'shuttle', s
   #grid.set 2,0, 'shuttle'
@@ -704,9 +708,9 @@ module.exports = Jit = (rawGrid) ->
   #grid.set 3, 0, null
 
 
-  #cellGroups.forEach (group) ->
-    #log 'group', group
-    #log 'connections', groupConnections.get group
+  cellGroups.forEach (group) ->
+    log 'group', group
+    log 'connections', groupConnections.get group
   #grid.set 6, 2, 'nothing'
 
   ###
