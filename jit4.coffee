@@ -88,75 +88,91 @@ GridBuffer = (match, grid) ->
       buffer.delete x, y
     return v
 
-Shuttles = (grid) ->
-  buffer = GridBuffer ['shuttle', 'thinshuttle'], grid
+# The code for finding & flood filling shuttles & engines is basically
+# identical. I'll reuse it, and switch according to which type of thing I'm
+# looking for.
+BlobFiller = (type, grid) ->
+  throw Error 'Invalid type' unless type in ['shuttle', 'engine']
 
-  shuttles = new Set
-  shuttleGrid = new Map2 # x,y -> shuttle.
+  match = {
+    shuttle: ['shuttle', 'thinshuttle']
+    engine: ['positive', 'negative']
+  }[type]
+
+  buffer = GridBuffer match, grid
+
+  blobs = new Set
+  blobGrid = new Map2 # x,y -> shuttle.
   watch = new Watcher
 
   buffer.watch.on (x, y) ->
-    deleteShuttleAt x, y
+    deleteBlobAt x, y
 
-  deleteShuttleAt = (x, y) ->
-    s = shuttleGrid.get x, y
-    return no unless shuttles.delete s
+  deleteBlobAt = (x, y) ->
+    b = blobGrid.get x, y
+    return no unless blobs.delete b
 
-    log "Destroyed shuttle #{s.id} at", x, y
-    assert s.used
-    s.used = no
+    log "Destroyed #{type} #{b.id} at", x, y
+    assert b.used
+    b.used = no
     # Put the points we ate back in the buffer.
-    s.points.forEach (x2, y2, v) ->
+    b.points.forEach (x2, y2, v) ->
       buffer.data.set x2, y2, v
 
-    watch.signal s
+    watch.signal b
     return yes
 
-  makeShuttle = (x, y) ->
-    #log 'makeShuttle at', x, y
+  makeBlob = (x, y, v) ->
+    #log 'makeBlob at', x, y
     #v = buffer.peek x, y
-    assert buffer.data.get(x, y) in ['shuttle', 'thinshuttle']
+    assert buffer.data.get(x, y) in match
 
-    s =
+    b =
       id: makeId()
       used: yes
       size: 0 # For debugging
-      numValidStates: 0
       points: new Map2
 
-    shuttles.add s
+    b.numValidStates = 0 if type is 'shuttle'
+
+    blobs.add b
 
     fill x, y, (x, y) =>
-      v = buffer.pump x, y
-      return no unless v
+      v2 = buffer.data.get x, y
+      return no if !v2 or (type is 'engine' and v2 != v)
 
-      shuttleGrid.set x, y, s
+      buffer.pump x, y
 
-      s.size++
-      s.points.set x, y, v
+      blobGrid.set x, y, b
+
+      b.size++
+      b.points.set x, y, v2
       return yes
 
-    assert s.size
+    assert b.size
+    if type is 'engine'
+      b.type = v
+      b.pressure = (if v is 'positive' then 1 else -1) * b.size
 
-    log 'Added shuttle', s
-    return s
+    log "Added #{type}", b
+    return b
 
   watch: watch
 
   forEach: (fn) ->
     buffer.data.forEach (x, y, v) ->
-      makeShuttle x, y
+      makeBlob x, y, v
 
-    shuttles.forEach fn
+    blobs.forEach fn
 
   get: (x, y) ->
-    if buffer.data.get x, y
-      makeShuttle x, y
+    if v = buffer.data.get x, y
+      makeBlob x, y, v
 
-    s = shuttleGrid.get x, y
+    s = blobGrid.get x, y
     return s if s?.used
 
-  collapse: (s) ->
+  collapseShuttle: (s) ->
     # When any cells are edited along a shuttle's path, we should move the
     # shuttle into its current position (its current state) in the grid. This
     # will force the shuttle to be regenerated (along with its states, starting
@@ -166,24 +182,27 @@ Shuttles = (grid) ->
   check: (invasive) ->
     @forEach(->) if invasive
 
-    shuttleGrid.forEach (x, y, s) ->
-      return unless s.used
-      # - No two different shuttles should be adjacent to each other
+    blobGrid.forEach (x, y, b) ->
+      return unless b.used
+      # - No two different blobs should be adjacent to each other
       for {dx, dy} in DIRS
-        s2 = shuttleGrid.get x+dx, y+dy
-        assert s2 is s if s2?.used
+        s2 = blobGrid.get x+dx, y+dy
+        assert s2 is b if s2?.used
 
-    shuttles.forEach (s) =>
-      assert s.used
-      s.points.forEach (x, y, p) =>
+    blobs.forEach (b) =>
+      assert b.used
+      b.points.forEach (x, y, v) =>
         # - Shuttles are represented in the grid
-        s2 = shuttleGrid.get(x, y)
-        assert.equal s, s2 if s2?.used
-        assert.equal @get(x, y), s
+        b2 = blobGrid.get(x, y)
+        assert.equal b, b2
+        assert.equal @get(x, y), b
         # - Shuttles always have all adjacent shuttle / thinshuttle points
-        for {dx, dy} in DIRS when !s.points.has x+dx,y+dy
+        for {dx, dy} in DIRS when !b.points.has x+dx,y+dy
           v2 = grid.get x+dx, y+dy
-          assert v2 not in ['shuttle', 'thinshuttle']
+          if type is 'shuttle'
+            assert v2 not in ['shuttle', 'thinshuttle']
+          else
+            assert v2 != v
 
 
 ShuttleStates = (grid, shuttles) ->
@@ -660,11 +679,12 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
         assert g.used
 
 
-Jit = (rawGrid) ->
+module.exports = Jit = (rawGrid) ->
   grid = Grid rawGrid
   #engineBuffer = GridBuffer ['positive', 'negative'], grid
 
-  shuttles = Shuttles grid
+  shuttles = BlobFiller 'shuttle', grid
+  engines = BlobFiller 'engine', grid
   shuttleStates = ShuttleStates grid, shuttles
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
@@ -673,6 +693,8 @@ Jit = (rawGrid) ->
   regions = Regions fillGrid, cellGroups, groupConnections
 
 
+  engines.forEach (e) ->
+    log 'engine', e
   #shuttles.forEach (s) ->
   #  log 'shuttle', s
   #grid.set 2,0, 'shuttle'
