@@ -103,7 +103,8 @@ BlobFiller = (type, grid) ->
 
   blobs = new Set
   blobGrid = new Map2 # x,y -> shuttle.
-  watch = new Watcher
+  addWatch = new Watcher
+  deleteWatch = new Watcher
 
   buffer.watch.on (x, y) ->
     deleteBlobAt x, y
@@ -112,14 +113,14 @@ BlobFiller = (type, grid) ->
     b = blobGrid.get x, y
     return no unless blobs.delete b
 
-    log "Destroyed #{type} #{b.id} at", x, y
+    #log "Destroyed #{type} #{b.id} at", x, y
     assert b.used
     b.used = no
     # Put the points we ate back in the buffer.
     b.points.forEach (x2, y2, v) ->
       buffer.data.set x2, y2, v
 
-    watch.signal b
+    deleteWatch.signal b
     return yes
 
   makeBlob = (x, y, v) ->
@@ -154,15 +155,19 @@ BlobFiller = (type, grid) ->
       b.type = v
       b.pressure = (if v is 'positive' then 1 else -1) * b.size
 
-    log "Added #{type}", b
+    #log "Added #{type}", b
+    addWatch.signal b
     return b
 
-  watch: watch
+  addWatch: addWatch
+  deleteWatch: deleteWatch
 
-  forEach: (fn) ->
+  flush: ->
     buffer.data.forEach (x, y, v) ->
       makeBlob x, y, v
 
+  forEach: (fn) ->
+    @flush()
     blobs.forEach fn
 
   get: (x, y) ->
@@ -216,7 +221,7 @@ ShuttleStates = (grid, shuttles) ->
       states.forEach (x, y, state) ->
         fn state, yes
 
-  shuttles.watch.on (shuttle) ->
+  shuttles.deleteWatch.on (shuttle) ->
     # Shuttle delete messages
     states = shuttleStates.get shuttle
     if states
@@ -248,7 +253,7 @@ ShuttleStates = (grid, shuttles) ->
     else
       shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
-    log 'created new state', state
+    #log 'created new state', state
     watch.signal state, yes
     return state
 
@@ -279,6 +284,48 @@ ShuttleStates = (grid, shuttles) ->
       successor = createStateAt state.shuttle, dx, dy
 
     return successor
+
+
+CurrentStates = (shuttles, shuttleStates) ->
+  # This stores & propogates the shuttle states.
+  currentStates = new Map # shuttle -> state.
+
+  # ... So, we don't want to tell everyone the current states have changed as
+  # soon as we move them - other shuttles might depend on the zones where they
+  # are. We'll hold any changes to the state map until step() is done then send
+  # them all.
+  patch = new Map
+
+  watch = new Watcher
+
+  shuttles.deleteWatch.on (s) -> currentStates.delete s
+  shuttles.addWatch.on (s) ->
+    state = shuttleStates.getInitialState s
+    currentStates.set s, state
+    watch.signal s, state
+
+  map: currentStates
+  watch: watch
+
+  set: (shuttle, state) -> patch.set shuttle, state
+
+  flush: ->
+    # Call this at the end of step()
+    patch.forEach (shuttle, state) ->
+      currentStates.set shuttle, state
+      watch.signal shuttle, state
+    patch.clear()
+
+
+DirtyStates = (currentStates) ->
+  # This keeps track of states which might move on the next step. This includes
+  # any shuttle which just moved, shuttles next to a zone which was
+  # just destroyed.
+  dirty = new Set
+
+  currentStates.watch.on (shuttle, state) ->
+    dirty.add shuttle
+    
 
 
 FillGrid = (shuttleStates) ->
@@ -369,7 +416,8 @@ CellGroups = (grid, engines, fillGrid) ->
   # This is very similar to shuttles, but instead of flood filling on connected
   # shuttle cells, we'll connect cells which have the same FillGrid.
 
-  # (x, y, cell) -> cell value
+  # (x, y, cell) -> cell value. This works the same as the buffers for engines
+  # and shuttles.
   pendingCells = new Set3 # I really don't care what these are.
 
   # (x, y, cell) -> group
@@ -378,43 +426,70 @@ CellGroups = (grid, engines, fillGrid) ->
 
   watch = new Watcher
 
-  deleteGroupAt = (x, y, c) ->
-    group = groupGrid.get x, y, c
-    return unless group
-    log 'deleting group', group
+  # For garbage collection.
+  groupsWithEngine = new WeakMap
+  groupsWithEngine.default = -> new Set
+
+  deleteGroupsAt = (x, y) ->
+    cmax = util.cellMax grid.get x, y
+    for c in [0...cmax]
+      group = groupGrid.get x, y, c
+      deleteGroup group if group
+
+  deleteGroup = (group) ->
+    #log 'deleting group', group
+    assert group.used
 
     # Invalidate g!
     group.used = no # More for debugging than anything.
     groups.delete group
     watch.signal group
 
+    group.engines.forEach (e) ->
+      groupsWithEngine.get(e).delete group
+
     # Recycle the points
     group.points.forEach (px, py, pc, pv) ->
+      #log 'pcb', px, py, pc, pv
       pendingCells.add px, py, pc
       groupGrid.delete px, py, pc
 
   grid.watch.forward (x, y, oldV, v) ->
     cmax = util.cellMax oldV
     for c in [0...cmax]
-      deleteGroupAt x, y, c
+      #log '---', x, y, c, oldV
+      group = groupGrid.get x, y, c
+      deleteGroup group if group
       pendingCells.delete x, y, c
 
-    for {dx, dy} in DIRS
-      cmax = util.cellMax grid.get x+dx, y+dy
-      for c in [0...cmax]
-        deleteGroupAt x+dx, y+dy, c
+    deleteGroupsAt x+dx, y+dy for {dx, dy} in DIRS
 
     cmax = util.cellMax v
     for c in [0...cmax]
+      #log 'pca', x, y, c, v
       pendingCells.add x, y, c
 
+  engines.deleteWatch.on (e) ->
+    # Because part of an engine which isn't adjacent to the group can be
+    # deleted / changed, we won't always know to delete the group from looking
+    # at the grid.
+    set = groupsWithEngine.get e
+    if set
+      #log 'deleted engine', e
+      set.forEach (g) -> deleteGroup g
+      groupsWithEngine.delete e
+
   fillGrid.pointWatch.on (x, y) ->
-    v = grid.get x, y
-    cmax = util.cellMax v
-    deleteGroupAt x, y, c for c in [0...cmax]
+    deleteGroupsAt x, y
 
   makeGroupAt = (x, y, c) ->
+    v0 = grid.get x, y
+
+    #log 'makeGroupAt', x, y, c, v0
+    assert v0?
+    assert c < util.cellMax v0
     assert pendingCells.has x, y, c
+
     key = fillGrid.getFillKey x, y
     filledStates = fillGrid.getFilledStates key
     shuttles = util.uniqueShuttlesInStates filledStates
@@ -434,6 +509,7 @@ CellGroups = (grid, engines, fillGrid) ->
     #log 'makeGroupAt', x, y, c, key
 
     fillCells grid, x, y, c, (x, y, c, v) ->
+      #log 'fillCells', x, y, c, v
       return no unless v # Optimization.
 
       group.useless = no if v and v not in ['positive', 'negative']
@@ -450,15 +526,16 @@ CellGroups = (grid, engines, fillGrid) ->
 
         if e = engines.get x, y
           group.engines.add e
+          groupsWithEngine.getDef(e).add group
 
         return yes
       else
         group.edges.add x, y, c
         return no
 
-
+    assert group.size
     groups.add group
-    #log 'made group', group
+    #log 'made group', group unless group.useless
     return group
 
   watch: watch
@@ -486,8 +563,12 @@ CellGroups = (grid, engines, fillGrid) ->
       makeGroupAt x, y, c
 
     groups.forEach (g) ->
-      fn g if !g.useless
+      fn g #if !g.useless
 
+  check: check = ->
+    groups.forEach (g) ->
+      g.points.forEach (x, y, c) ->
+        assert.equal groupGrid.get(x, y, c), g
 
 GroupConnections = (cellGroups) ->
   # So, here we track & report on connections between groups. Groups are either
@@ -498,7 +579,7 @@ GroupConnections = (cellGroups) ->
 
   cellGroups.watch.on (group) ->
     if (gc = connections.get group)
-      log 'deleting'
+      #log 'deleting'
       connections.delete group
       # Also any groups we've cached which connect to the deleted group will
       # need to be regenerated.
@@ -615,9 +696,9 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       regionsForGroup.get(group)?.delete region.states
     watch.signal region
 
-  createRegion = (group0, currentStates) ->
-    #log 'createRegion', group0, currentStates
-    assert regionsForGroup.getDef(group0).isDefinedFor currentStates
+  createRegion = (group0, shuttleStateMap) ->
+    #log 'createRegion', group0, shuttleStateMap
+    assert regionsForGroup.getDef(group0).isDefinedFor shuttleStateMap
 
     shuttleKey = group0.shuttleKey
 
@@ -627,7 +708,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     # Check to see if this group is filled in the specified states
     invalid = no
     group0.shuttles.forEach (s) ->
-      state = currentStates.get s
+      state = shuttleStateMap.get s
       trimmedStates.add state
       invalid = yes if fillGrid.getFilledStates(group0.fillKey).has state
 
@@ -635,7 +716,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     # fill the group.
     if invalid
       # Null = this group is filled here; no region is possible.
-      regionsForGroup.getDef(group0).set currentStates, null
+      regionsForGroup.getDef(group0).set shuttleStateMap, null
       #log '-> invalid'
       return null
 
@@ -645,41 +726,47 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       groups: new Set
       states: trimmedStates # Set of required states for use
       edges: new Set # Set of adjacent groups
+      engines: new Set # Hoisted from groups
 
-    util.fillGroups group0, (group) ->
+    util.fillGraph group0, (group, hmm) ->
       # There's three reasons we won't connect a region across group lines:
       # 1. We don't connect (in which case this won't be called)
       # 2. The other group depends on more (or less) shuttles
       if group.shuttleKey != shuttleKey
         region.edges.add group
         regionsTouchingGroup.getDef(group).add region
-        return null
+        return
 
       # 3. The other group is filled in one of my states
       filledStates = fillGrid.getFilledStates group.fillKey
       filled = no
       trimmedStates.forEach (state) ->
         filled = yes if filledStates.has state
-      return null if filled
+      return if filled
 
       # Ok, we're looking good.
       regionsForGroup.getDef(group).set trimmedStates, region
       region.size++
       region.groups.add group
+      group.engines.forEach (e) -> region.engines.add e
 
-      return groupConnections.get group
+      groupConnections.get(group).forEach hmm
       
     assert region.size
     regions.add region
     region
 
-  get: (group, currentStates) ->
+  #dependancies: (group) -> regionsForGroup.getDef(group).shuttles
+
+  watch: watch
+  
+  get: (group, shuttleStateMap) ->
     map = regionsForGroup.getDef group
-    region = map.get currentStates
+    region = map.get shuttleStateMap
     return null if region is null # The group is filled right now.
 
     if !region
-      region = createRegion group, currentStates
+      region = createRegion group, shuttleStateMap
 
     return region
 
@@ -690,6 +777,132 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       assert r.size
       r.groups.forEach (g) ->
         assert g.used
+
+
+Zones = (regions, currentStates) ->
+  # A zone is a set of regions which are connected because of the current
+  # shuttle states.  These are constantly destroyed & regenerated as shuttles
+  # move around.
+
+  zones = new Set # This set may be redundant.
+  zoneForRegion = new Map # region -> zone
+
+  # For garbage collection
+  zonesDependingOnShuttle = new WeakMap # shuttle -> set of zones
+  zonesDependingOnShuttle.default = -> new Set
+
+  currentStates.watch
+
+  watch = new Watcher
+
+  regions.watch.on (r) ->
+    deleteZone zoneForRegion.get r
+
+  currentStates.watch.on (shuttle, state) ->
+    zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
+      deleteZone zone
+
+  deleteZone = (z) ->
+    return unless z?.used
+    z.used = false
+    zones.delete z
+    #log 'deleted zone', z
+
+  makeZone = (r0) ->
+    # Make a zone starting from the specified group.
+    zone =
+      used: true
+      pressure: 0
+
+      _debug_regions: new Set # For debugging.
+
+    # Set of shuttles - if the state of any of these shuttles changes, the zone must die.
+    #dependancies = new Set
+    # Set of engines inside the zone
+    engines = new Set
+
+    util.fillGraph r0, (r, hmm) ->
+      assert !zoneForRegion.get(r)?.used
+      zoneForRegion.set r, zone
+      zone._debug_regions.add r
+
+      r.states.forEach (state) ->
+        #dependancies.add state.shuttle
+        zonesDependingOnShuttle.getDef(state.shuttle).add zone
+
+      r.engines.forEach (e) ->
+        if !engines.has e
+          assert e.used
+          engines.add e
+          zone.pressure += e.pressure
+      
+      # And recurse.
+      r.edges.forEach (group) ->
+        throw Error 'sadf' unless group
+        r = regions.get group, currentStates.map
+        # r is null if the group is currently filled.
+        hmm r if r
+
+
+    zones.add zone
+    zone
+
+
+  watch: watch
+
+  getZoneForRegion: (region) ->
+    assert region
+    zone = zoneForRegion.get region
+    zone = makeZone region if !zone?.used
+    return zone
+
+  getZoneForGroup: (group) ->
+    r = regions.get group, currentStates.map
+    return if r is null then null else @getZoneForRegion r
+
+
+### # I'm holding off on writing this because its really just an optimization of group edges.
+
+RegionConnections = (cellGroups, regions) ->
+  # This calculates region calculations. Regions are connected if they touch
+  # and they are compatible - which is, its possible that if A is in a given
+  # zone, B will be in that zone as well.
+  #
+  # For each region, there's two sets of connections: down connections and up
+  # connections:
+  #  - Down connections are 'downstream' in the sense that if region A is in a
+  #    zone, downstream regions B and C will always be in that zone too.
+  #  - Up connections may or may not be active based on the current set of
+  #    states. The region just connects to another group.
+  #
+  # This module uses the same 'complete' mechanic as GroupConnections.
+  # Bijections are always added reflexively when they're found, but we only
+  # know we have all connections for a given region if we actually went
+  # looking.
+  downConnections = new Map # region -> set of connected regions
+  downConnections.default = -> new Set
+
+  upConnections = new Map # Region -> set of groups we need to check
+  upConnections.default = -> new Set
+
+  complete = new WeakSet # Regions we have the full set of connections for.
+
+  regions.watch.on (region) ->
+    if down = downConnections.get region
+      down.forEach (r2) ->
+        downConnections.get(r2).delete region
+        complete.delete r2
+
+      downConnections.delete region
+
+    if up = upConnections.get region
+      # This is a set of groups.
+      
+
+    complete.delete region # not really needed because its weak?
+###
+
+  
 
 
 module.exports = Jit = (rawGrid) ->
@@ -705,6 +918,9 @@ module.exports = Jit = (rawGrid) ->
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
 
+  currentStates = CurrentStates shuttles, shuttleStates
+
+  zones = Zones regions, currentStates
 
   #engines.forEach (e) ->
   #  log 'engine', e
@@ -748,18 +964,28 @@ module.exports = Jit = (rawGrid) ->
   grid.forEach (x, y, v) ->
     log 'fillKey', x, y, fillGrid.getFillKey x, y
 
-  step: ->
-    dangerousShuttles.forEach (s) ->
-      # 1. Calculate up/down force
-      #   - Get all neighboring zones given current state
-      #
-      #
-      # 2. Try and move up/down if needed
-      #
-      # 3. Calculate left/right force
-      # 4. Try and move left/right, ...
-
   ###
+  zones: zones
+  step: ->
+    shuttles.flush()
+    # 1. Calculate up/down force
+    #   - Get all neighboring zones given current state
+    #
+    #
+    # 2. Try and move up/down if needed
+    #
+    # 3. Calculate left/right force
+    # 4. Try and move left/right, ...
+
+
+    # ...
+    currentStates.flush()
+
+  check: (invasive) ->
+    shuttles.check invasive
+    cellGroups.check invasive
+    groupConnections.check invasive
+    regions.check invasive
 
   torture: ->
     randomValue = randomWeighted [
@@ -806,6 +1032,7 @@ module.exports = Jit = (rawGrid) ->
   grid: grid
   groups: cellGroups
   shuttles: shuttles
+  engines: engines
 
 ###
 start = Date.now()

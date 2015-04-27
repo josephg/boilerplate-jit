@@ -79,7 +79,7 @@ exports.cellMax = (v) ->
   switch v
     when 'positive', 'negative' then 4
     when 'bridge' then 2
-    when null then 0
+    when null, undefined then 0
     else 1
 
 connectedCells = exports.connectedCells = (grid, x, y, c) ->
@@ -199,16 +199,33 @@ exports.ShuttleStateMap = class ShuttleStateMap
   forEachValue: (fn) ->
     each @values, @shuttles.length, fn
 
-exports.fillGroups = (initialGroup, f) ->
+exports.fillGraph = (initialNode, f) ->
   visited = new Set
   explore = []
 
-  hmm = (group) ->
-    explore.push group if !visited.has group
-  hmm initialGroup
+  hmm = (node) ->
+    explore.push node if !visited.has node
+  hmm initialNode
 
   while explore.length > 0
-    group = explore.shift()
-    connections = f group
-    connections?.forEach hmm
+    node = explore.shift()
+    f node, hmm
+
+  return
+
+
+exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, stream = process.stdout) ->
+  top ||= 0; left ||= 0
+  for y in [top-1..bottom+1]
+    stream.write ''
+    for x in [left-1..right+1]
+      v = getFn(x, y)
+      stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
+    stream.write '\n'
+
+exports.printJSONGrid = (extents, grid, stream = process.stdout) ->
+  printCustomGrid extents, ((x, y) -> grid[[x,y]]), stream
+
+exports.printGrid = (extents, grid, stream = process.stdout) ->
+  printCustomGrid extents, ((x, y) -> grid.get x, y), stream
 
