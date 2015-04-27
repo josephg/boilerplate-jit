@@ -10,6 +10,7 @@ makeId = do ->
   nextId = 1
   -> nextId++
 
+mersenne.seed 1234
 randomWeighted = (arr) ->
   totalWeight = 0
   totalWeight += arr[i+1] for _, i in arr by 2
