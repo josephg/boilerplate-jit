@@ -154,7 +154,7 @@ BlobFiller = (type, grid) ->
       b.type = v
       b.pressure = (if v is 'positive' then 1 else -1) * b.size
 
-    #log "Added #{type}", b
+    log "Added #{type}", b
     return b
 
   watch: watch
@@ -361,7 +361,7 @@ FillGrid = (shuttleStates) ->
       fillKey.set x, y, key
     return key
 
-CellGroups = (grid, fillGrid) ->
+CellGroups = (grid, engines, fillGrid) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
   # contain the same regions.
@@ -429,19 +429,28 @@ CellGroups = (grid, fillGrid) ->
       shuttleKey: shuttles.map((s) -> "#{s.id}").join ' '
       # Does the group *only* have engine cells? They clutter up my logs and make me mad!
       useless: true
+      engines: new Set # Engines this group contains
 
     #log 'makeGroupAt', x, y, c, key
 
     fillCells grid, x, y, c, (x, y, c, v) ->
+      return no unless v # Optimization.
+
       group.useless = no if v and v not in ['positive', 'negative']
       #log 'fillCells', x, y, c, v
       if fillGrid.getFillKey(x, y) == key
         group.points.set x, y, c, v
         group.size++
+
         assert !groupGrid.has x, y, c
         groupGrid.set x, y, c, group
+
         assert pendingCells.has x, y, c
         pendingCells.delete x, y, c
+
+        if e = engines.get x, y
+          group.engines.add e
+
         return yes
       else
         group.edges.add x, y, c
@@ -692,7 +701,7 @@ module.exports = Jit = (rawGrid) ->
   shuttleStates = ShuttleStates grid, shuttles
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
-  cellGroups = CellGroups grid, fillGrid
+  cellGroups = CellGroups grid, engines, fillGrid
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
 
