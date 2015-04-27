@@ -1,5 +1,5 @@
-sentSignals = 0
-process.on 'exit', -> console.log 'ss', sentSignals
+#sentSignals = 0
+#process.on 'exit', -> console.log 'ss', sentSignals
 
 module.exports = class Watcher
   constructor: (@forEach) ->
@@ -17,7 +17,7 @@ module.exports = class Watcher
     @observers.push fn
 
   signal: (args...) ->
-    sentSignals++
+    #sentSignals++
     o(args...) for o in @observers
     return
 

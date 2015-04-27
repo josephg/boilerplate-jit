@@ -2,7 +2,9 @@
 # console.log in node. The signature is the same.
 
 log = module.exports = (args...) ->
-  if require
+  if typeof window is 'object'
+    console.log args...
+  else
     {inspect} = require 'util'
     f = (a) ->
       if typeof a is 'string'
@@ -10,6 +12,4 @@ log = module.exports = (args...) ->
       else
         inspect a, {depth:5, colors:true}
     console.log args.map(f).join ' '
-  else
-    console.log args...
 

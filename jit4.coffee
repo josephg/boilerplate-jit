@@ -38,11 +38,23 @@ Grid = (rawGrid) ->
   watch: watch
   get: (x, y) -> grid.get x, y
   set: (x, y, v) ->
+    v = undefined if v is null
     oldV = grid.get x, y
     if v != oldV
-      grid.set x, y, v
+      if v
+        grid.set x, y, v
+      else
+        grid.delete x, y
       watch.signal x, y, oldV, v
+      return yes
+    else
+      return no
   forEach: (fn) -> grid.forEach fn
+
+  toJSON: ->
+    json = {}
+    grid.forEach (x, y, v) -> json["#{x},#{y}"] = v if v?
+    json
 
 
 GridBuffer = (match, grid) ->
@@ -126,7 +138,7 @@ Shuttles = (grid) ->
 
     assert s.size
 
-    log 'added shuttle', s
+    log 'Added shuttle', s
     return s
 
   watch: watch
@@ -542,9 +554,13 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
   # The region grid is lovely. This maps from:
   # group -> set of shuttle states -> region
   regionsForGroup = new Map
-  regionsForGroup.default = (g) ->
-    shuttles = util.uniqueShuttlesInStates(fillGrid.getFilledStates g.fillKey)
-    new util.ShuttleStateMap shuttles
+  regionsForGroup.default = (g) -> new util.ShuttleStateMap g.shuttles
+    #shuttles = util.uniqueShuttlesInStates(fillGrid.getFilledStates g.fillKey)
+
+  # This is needed for cleanup. Regions are destroyed when an adjacent group is
+  # destroyed so if the group should now connect, we can take that into account.
+  regionsTouchingGroup = new Map
+  regionsTouchingGroup.default = -> new Set
 
   regions = new Set
 
@@ -555,15 +571,17 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     return unless map
     regionsForGroup.delete group
 
-    map.forEachValue (region) ->
-      deleteRegion region
-      watch.signal region
+    map.forEachValue (region) -> deleteRegion region
+
+    set = regionsTouchingGroup.get group
+    set?.forEach (region) -> deleteRegion region
 
   deleteRegion = (region) ->
     region.used = no
     regions.delete region
     region.groups.forEach (group) ->
       regionsForGroup.get(group)?.delete region.states
+    watch.signal region
 
   createRegion = (group0, currentStates) ->
     #log 'createRegion', group0, currentStates
@@ -573,6 +591,8 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
     # A map of just the states that are referenced by the group
     trimmedStates = new Set
+
+    # Check to see if this group is filled in the specified states
     invalid = no
     group0.shuttles.forEach (s) ->
       state = currentStates.get s
@@ -584,20 +604,24 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     if invalid
       # Null = this group is filled here; no region is possible.
       regionsForGroup.getDef(group0).set currentStates, null
-      log '-> invalid'
+      #log '-> invalid'
       return null
 
     region =
       used: yes
       size: 0
       groups: new Set
-      states: trimmedStates
+      states: trimmedStates # Set of required states for use
+      edges: new Set # Set of adjacent groups
 
     util.fillGroups group0, (group) ->
       # There's three reasons we won't connect a region across group lines:
       # 1. We don't connect (in which case this won't be called)
       # 2. The other group depends on more (or less) shuttles
-      return null if group.shuttleKey != shuttleKey
+      if group.shuttleKey != shuttleKey
+        region.edges.add group
+        regionsTouchingGroup.getDef(group).add region
+        return null
 
       # 3. The other group is filled in one of my states
       filledStates = fillGrid.getFilledStates group.fillKey
@@ -629,7 +653,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
   check: ->
     regions.forEach (r) ->
-      log 'check', r
+      #log 'check', r
       assert r.used
       assert r.size
       r.groups.forEach (g) ->
@@ -648,6 +672,7 @@ Jit = (rawGrid) ->
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
 
+
   #shuttles.forEach (s) ->
   #  log 'shuttle', s
   #grid.set 2,0, 'shuttle'
@@ -657,19 +682,20 @@ Jit = (rawGrid) ->
   #grid.set 3, 0, null
 
 
-  cellGroups.forEach (group) ->
+  #cellGroups.forEach (group) ->
     #log 'group', group
     #log 'connections', groupConnections.get group
-  log '----'
   #grid.set 6, 2, 'nothing'
-  log '----'
 
+  ###
   currentState = new Map
   shuttles.forEach (s) ->
     currentState.set s, shuttleStates.getInitialState(s)
 
   cellGroups.forEach (group) ->
-    #log 'region', regions.get group, currentState
+    log 'region', regions.get group, currentState
+  ###
+
 
   ###
 
@@ -742,7 +768,18 @@ Jit = (rawGrid) ->
         #@debugPrint()
         throw e
 
- 
+  grid: grid
+  groups: cellGroups
+  shuttles: shuttles
+
+###
+start = Date.now()
+jit = new Jit require './cpu.json'
+#jit.torture()
+end = Date.now()
+console.log end - start
+
+###
 parseFile = exports.parseFile = (filename, opts) ->
   torture =
     if filename in ['-t', 'torture']
@@ -760,11 +797,8 @@ parseFile = exports.parseFile = (filename, opts) ->
 
   jit.torture() if torture
   
-
-
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
   parseFile filename
-
 
