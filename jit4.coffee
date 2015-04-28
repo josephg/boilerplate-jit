@@ -248,11 +248,11 @@ ShuttleStates = (grid, shuttles) ->
         deleteWatch.signal state
 
   canShuttleFitAt = (shuttle, dx, dy) ->
+    fits = yes
     shuttle.points.forEach (x, y) =>
       # The grid cell is un-enterable.
-      if !letsShuttleThrough grid.get(x+dx, y+dy)
-        return no
-    return yes
+      fits = no if !letsShuttleThrough grid.get(x+dx, y+dy)
+    return fits
 
   createStateAt = (shuttle, dx, dy) ->
     states = shuttleStates.get shuttle
@@ -273,6 +273,7 @@ ShuttleStates = (grid, shuttles) ->
 
     #log 'created new state', state
     addWatch.signal state if valid
+    log 'made shuttle state', state if valid
     return state
 
   flushStatesAt: (x, y) ->
@@ -891,7 +892,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
 
   rotate: ->
     # Call this at the end of step()
-    patch.forEach (shuttle, state) ->
+    patch.forEach (state, shuttle) ->
       currentStates.set shuttle, state
       watch.signal shuttle, state
     patch.clear()
@@ -1184,25 +1185,26 @@ module.exports = Jit = (rawGrid) ->
           log 'pressure', zone.pressure
           deps.add zone
 
-          impulse += mult * zone.pressure
+          impulse -= mult * zone.pressure
           
         continue unless impulse
 
         dir = if impulse < 0
+          impulse = -impulse
           if d is 'y' then UP else LEFT
         else
           if d is 'y' then DOWN else RIGHT
 
         moved = no
-        impulse = Math.abs impulse
         while impulse
+          log 'impulse', impulse, 'dir', dir
           break unless (next = shuttleStates.getStateNear state, dir)
           state = next
           moved = yes
           impulse--
           
         if moved
-          log 'shuttle moved to', state
+          log 'shuttle', shuttle.id, 'moved to', state
           currentStates.set shuttle, state
           deps.clear()
           # The shuttle is still dirty - so we're kinda done here.
@@ -1210,8 +1212,8 @@ module.exports = Jit = (rawGrid) ->
 
       # The shuttle didn't move.
       dirtyShuttles.setCleanDeps shuttle, deps
-      log 'shuttle did not move', shuttle
-      log 'deps', deps
+      log '----> shuttle did not move', shuttle
+      #log 'deps', deps
             
     # Tell everyone about how the current states changed. This will destroy any
     # zones for the next step() call.
@@ -1240,7 +1242,6 @@ module.exports = Jit = (rawGrid) ->
       'thinshuttle', 1
     ]
 
-
     for iter in [1...1000]
       log "----- iter #{iter}"
       for [1...10]
@@ -1254,19 +1255,9 @@ module.exports = Jit = (rawGrid) ->
 
       try
         invasive = iter % 2 == 0
-        shuttles.check invasive
-        groupConnections.check invasive
-
-        currentState = new Map
-        shuttles.forEach (s) ->
-          currentState.set s, shuttleStates.getInitialState(s)
-
-        cellGroups.forEach (group) ->
-          r = regions.get group, currentState
-          assert r is null || r.used
+        @check invasive
         
-        regions.check()
-
+        @step()
       catch e
         log '****** CRASH ******'
         #@debugPrint()
@@ -1304,7 +1295,9 @@ parseFile = exports.parseFile = (filename, opts) ->
 
   jit.torture() if torture
 
-  jit.step() if !torture
+  if !torture
+    jit.step()
+    jit.step()
   
 if require.main == module
   filename = process.argv[2]
