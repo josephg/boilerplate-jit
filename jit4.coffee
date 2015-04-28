@@ -193,7 +193,9 @@ BlobFiller = (type, grid) ->
     s = blobGrid.get x, y
     return s if s?.used
 
-  collapseShuttle: (s) ->
+  collapse: (s, dx, dy) ->
+    assert type is 'shuttle'
+
     # When any cells are edited along a shuttle's path, we should move the
     # shuttle into its current position (its current state) in the grid. This
     # will force the shuttle to be regenerated (along with its states, starting
@@ -706,30 +708,6 @@ GroupConnections = (cellGroups) ->
     assert.equal 0, connections.size
 
 
-StateGrid = (shuttleStates) ->
-  # This maps x,y -> a set of shuttles which sometimes occupy this region
-  # (including in invalid states)
-  # Its different from fillGrid in three ways:
-  #  1. It maps to the shuttle, not the shuttle state
-  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
-  #  3. It includes invalid states
-  #
-  # Its used to find & kill shuttles when the grid changes.
-  stateGrid = new Map2 -> new Set
-  watch = new Watcher
-
-  shuttleStates.addWatch.forward (state) ->
-    state.shuttle.points.forEach (x, y, v) ->
-      x += state.dx; y += state.dy
-      stateGrid.get(x, y).add state.shuttle
-      watch.signal x, y
-
-  shuttleStates.deleteWatch.on (state) ->
-    state.shuttle.points.forEach (x, y, v) ->
-      x += state.dx; y += state.dy
-      stateGrid.get(x, y).delete state.shuttle
-      watch.signal x, y
-
 #StateEdge = (shuttleStates) ->
   # The edge of a shuttle is a set of grid cells (x, y, cell) which may
 
@@ -882,6 +860,8 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     watch.signal s, state
   shuttles.deleteWatch.on (s) ->
     currentStates.delete s
+    # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
+    patch.delete s
 
   map: currentStates
   watch: watch
@@ -1050,6 +1030,46 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
   forEach: (fn) -> dirty.forEach fn
 
 
+Collapser = (grid, shuttles, shuttleStates, currentStates) ->
+  # This maps x,y -> a set of shuttles which sometimes occupy this region
+  # (including in invalid states)
+  # Its different from fillGrid in three ways:
+  #  1. It maps to the shuttle, not the shuttle state
+  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
+  #  3. It includes invalid states
+  #
+  # Its used to find & kill shuttles when the grid changes.
+  stateGrid = new Map2 -> new Set
+  watch = new Watcher
+
+  shuttleStates.addWatch.forward (state) ->
+    state.shuttle.points.forEach (x, y, v) ->
+      x += state.dx; y += state.dy
+      stateGrid.get(x, y).add state.shuttle
+      watch.signal x, y
+
+  shuttleStates.deleteWatch.on (state) ->
+    state.shuttle.points.forEach (x, y, v) ->
+      x += state.dx; y += state.dy
+      stateGrid.get(x, y).delete state.shuttle
+      watch.signal x, y
+
+  grid.watch.forward (x, y, oldV, v) ->
+    if set = stateGrid.get x, y
+      set.forEach (shuttle) ->
+        log 'collapsing shuttle'
+        state = currentStates.map.get shuttle
+        {dx, dy} = state
+
+        shuttle.points.forEach (sx, sy, sv) ->
+          grid.set sx, sy, 'nothing' unless sx is x and sy is y
+
+        shuttle.points.forEach (sx, sy, sv) ->
+          sx += dx; sy += dy
+          grid.set sx, sy, sv unless sx is x and sy is y
+        #shuttles.collapse shuttle, state.dx, state.dy
+
+        log grid.toJSON()
 
 
 ### # I'm holding off on writing this because its really just an optimization of group edges.
@@ -1104,7 +1124,6 @@ module.exports = Jit = (rawGrid) ->
   engines = BlobFiller 'engine', grid
   shuttleStates = ShuttleStates grid, shuttles
   fillGrid = FillGrid shuttleStates
-  stateGrid = StateGrid shuttleStates
   cellGroups = CellGroups grid, engines, fillGrid
   stateForce = StateForce shuttleStates, cellGroups
   groupConnections = GroupConnections cellGroups
@@ -1112,6 +1131,8 @@ module.exports = Jit = (rawGrid) ->
   currentStates = CurrentStates shuttles, stateForce, shuttleStates
   zones = Zones regions, currentStates
   dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
+
+  Collapser grid, shuttles, shuttleStates, currentStates
 
   #engines.forEach (e) ->
   #  log 'engine', e
@@ -1296,6 +1317,9 @@ parseFile = exports.parseFile = (filename, opts) ->
   if !torture
     jit.step()
     jit.step()
+
+    log '-----'
+    jit.grid.set 5, 2, null
   
 if require.main == module
   filename = process.argv[2]
