@@ -852,29 +852,44 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
   # them all.
   patch = new Map
 
-  watch = new Watcher
+  # Its a bit of a shame we need both of these. The endStepWatch is probably
+  # what you want - it is used to trigger deleting zones and regions and so on,
+  # where we don't want shuttles that move early in the tick to interact with
+  # shuttles which move later on.
+  endStepWatch = new Watcher
+  # Unfortunately, when shuttles touch they *do* have to interact.
+  # immediateWatch is used to detect things like that.
+  immediateWatch = new Watcher
 
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
     currentStates.set s, state
-    watch.signal s, state
+    immediateWatch.signal s, state
+    endStepWatch.signal s, state
+
   shuttles.deleteWatch.on (s) ->
     currentStates.delete s
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
     patch.delete s
 
   map: currentStates
-  watch: watch
+  watch: endStepWatch
 
-  set: (shuttle, state) -> patch.set shuttle, state
+  set: (shuttle, state) ->
+    patch.set shuttle, state
+    immediateWatch.signal shuttle, state
 
   rotate: ->
     # Call this at the end of step()
     patch.forEach (state, shuttle) ->
       currentStates.set shuttle, state
-      watch.signal shuttle, state
+      endStepWatch.signal shuttle, state
     patch.clear()
  
+  immediateWatch: immediateWatch
+  getImmediate: (shuttle) ->
+    patch.get(shuttle) || currentStates.get(shuttle)
+
 
 Zones = (regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
@@ -989,10 +1004,10 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
 
   shuttles.deleteWatch.on (s) ->
     # A shuttle was deleted.
-    deps = shuttleZoneDeps.get s
-    if deps
+    if (deps = shuttleZoneDeps.get s)
       deps.forEach (z) -> shuttlesForZone.get(z).delete s
       shuttleZoneDeps.delete s
+    dirty.delete s
 
   zones.watch.on (z) ->
     # A zone was deleted. Set any relevant shuttles to dirty.
@@ -1014,11 +1029,6 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
 
       deps.clear()
       
-
-  # Really, this is mostly so I can reuse the set object.
-  getDepSetFor: (shuttle) ->
-    return shuttleZoneDeps.getDef shuttle
-
   # The shuttle is clean - but it will become dirty if these zones change.
   setCleanDeps: (shuttle, deps) ->
     # A dirty shuttle didn't move.
@@ -1026,11 +1036,12 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
 
     deps.forEach (z) ->
       shuttlesForZone.getDef(z).add shuttle
+    shuttleZoneDeps.set shuttle, deps
 
   forEach: (fn) -> dirty.forEach fn
 
 
-Collapser = (grid, shuttles, shuttleStates, currentStates) ->
+ShuttleGrid = (grid, shuttles, shuttleStates, currentStates) ->
   # This maps x,y -> a set of shuttles which sometimes occupy this region
   # (including in invalid states)
   # Its different from fillGrid in three ways:
@@ -1038,40 +1049,88 @@ Collapser = (grid, shuttles, shuttleStates, currentStates) ->
   #  2. It includes any shuttle which occupies a grid cell using thinshuttle
   #  3. It includes invalid states
   #
-  # Its used to find & kill shuttles when the grid changes.
+  # Its used to find & kill shuttles when the grid changes and also make sure
+  # shuttles don't intersect.
   stateGrid = new Map2 -> new Set
   watch = new Watcher
+  collapseWatch = new Watcher
+
+  # A map from state -> set of states (in other shuttles) that will cause the
+  # shuttles to collide.
+  adjacentStates = new Map
+  adjacentStates.default = -> new Set
 
   shuttleStates.addWatch.forward (state) ->
     state.shuttle.points.forEach (x, y, v) ->
       x += state.dx; y += state.dy
-      stateGrid.get(x, y).add state.shuttle
+      stateGrid.get(x, y).add state
       watch.signal x, y
+    addAdjacentStates state
 
   shuttleStates.deleteWatch.on (state) ->
     state.shuttle.points.forEach (x, y, v) ->
       x += state.dx; y += state.dy
-      stateGrid.get(x, y).delete state.shuttle
+      stateGrid.get(x, y).delete state
       watch.signal x, y
 
-  collapse = (shuttle) ->
-    log 'collapsing shuttle'
-    state = currentStates.map.get shuttle
+    adjacentStates.get(state)?.forEach (state2) ->
+      adjacentStates.get(state2).delete state
+    adjacentStates.delete state
+
+  addAdjacentStates = (state1) ->
+    log 'looking for states adjacent to', state1
+    state1.shuttle.edges.forEach (x, y, dir) ->
+      {dx, dy} = DIRS[dir]
+      x += state1.dx + dx
+      y += state1.dy + dy
+
+      log x, y
+      if set = stateGrid.get x, y
+        set.forEach (state2) ->
+          return if state2.shuttle is state1.shuttle
+          log '***** adjacent states found', state1, state2
+          adjacentStates.getDef(state1).add state2
+          adjacentStates.getDef(state2).add state1
+
+  collapse = (shuttle, state) ->
+    # This will happen a lot, because we'll often try to collapse multiple
+    # states all in one flurry of destruction.
+    return if shuttle.numValidStates is 0
+
+    state ?= currentStates.map.get shuttle
+    log 'collapsing shuttle', state
     {dx, dy} = state
 
     shuttle.points.forEach (sx, sy, sv) ->
-      grid.set sx, sy, 'nothing' unless sx is x and sy is y
+      grid.set sx, sy, 'nothing' #unless sx is x and sy is y
 
     shuttle.points.forEach (sx, sy, sv) ->
       sx += dx; sy += dy
-      grid.set sx, sy, sv unless sx is x and sy is y
+      grid.set sx, sy, sv #unless sx is x and sy is y
+
     #shuttles.collapse shuttle, state.dx, state.dy
 
     log grid.toJSON()
 
-  grid.watch.forward (x, y, oldV, v) ->
-    stateGrid.get(x, y)?.forEach collapse
+    collapseWatch.signal state
 
+
+  grid.watch.forward (x, y, oldV, v) ->
+    stateGrid.get(x, y)?.forEach (state) ->
+      collapse state.shuttle
+    grid.set x, y, v
+
+  currentStates.immediateWatch.on (shuttle1, state1) ->
+    if set = adjacentStates.get state1
+      set.forEach (state2) ->
+        shuttle2 = state2.shuttle
+        if currentStates.getImmediate(shuttle2) is state2
+          # Oof. collapse.
+          collapse shuttle1, state1
+          collapse shuttle2, state2
+
+  watch: watch
+  collapseWatch: collapseWatch
 
 ### # I'm holding off on writing this because its really just an optimization of group edges.
 
@@ -1133,7 +1192,7 @@ module.exports = Jit = (rawGrid) ->
   zones = Zones regions, currentStates
   dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
 
-  Collapser grid, shuttles, shuttleStates, currentStates
+  ShuttleGrid grid, shuttles, shuttleStates, currentStates
 
   #engines.forEach (e) ->
   #  log 'engine', e
@@ -1190,10 +1249,9 @@ module.exports = Jit = (rawGrid) ->
       force = stateForce.get state
 
       # Set of zones which, when deleted, will make the shuttle dirty again.
-      # This is only used if the shuttle doesn't move. If it moves, it'll
-      # become dirty again anyway.
-      deps = dirtyShuttles.getDepSetFor shuttle
-      assert deps.size is 0
+      # This is only used if the shuttle doesn't move. So its kinda gross that
+      # we have to allocate an object here - but .. eh.
+      deps = new Set
 
       # Y first.
       for d in ['y', 'x'] when (f = force[d])
@@ -1226,7 +1284,6 @@ module.exports = Jit = (rawGrid) ->
         if moved
           log 'shuttle', shuttle.id, 'moved to', state
           currentStates.set shuttle, state
-          deps.clear()
           # The shuttle is still dirty - so we're kinda done here.
           return
 
@@ -1334,8 +1391,8 @@ parseFile = exports.parseFile = (filename, opts) ->
 
   if !torture
     jit.step()
+    jit.step()
     jit.printGrid()
-    #jit.step()
 
     log '-----'
     #jit.grid.set 5, 2, null
