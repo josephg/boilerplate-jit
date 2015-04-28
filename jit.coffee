@@ -53,11 +53,6 @@ Grid = (rawGrid) ->
       return no
   forEach: (fn) -> grid.forEach fn
 
-  toJSON: ->
-    json = {}
-    grid.forEach (x, y, v) -> json["#{x},#{y}"] = v if v?
-    json
-
 
 GridBuffer = (match, grid) ->
   # A set of all the cells which are shuttle / thinshuttle and haven't been
@@ -125,16 +120,19 @@ BlobFiller = (type, grid) ->
     deleteWatch.signal b
     return yes
 
-  Blob = (x, y, v) ->
+  Blob = (x, y, v0) ->
     #log 'makeBlob at', x, y
-    #v = buffer.peek x, y
+    #v0 = buffer.peek x, y
     assert buffer.data.get(x, y) in match
 
     @id = makeId()
     @used = yes
     @size = 0 # For debugging
     @points = new Map2
+    # Edges around the entire shuttle
     @edges = new Set3
+    # Edges around v=shuttle tiles
+    @pushEdges = new Set3 if type is 'shuttle'
 
     @numValidStates = 0 if type is 'shuttle'
 
@@ -146,19 +144,25 @@ BlobFiller = (type, grid) ->
       # ... So we'll hit cells up to 4 times.
       return if @points.has x, y
 
-      v2 = buffer.data.get x, y
-      if !v2 or (type is 'engine' and v2 != v)
-        d = DIRS[dir]
+      v = buffer.data.get x, y
+
+      if !v or (type is 'engine' and v != v0)
         # This adds the slot that the edge lives in.
+        d = DIRS[dir]
         @edges.add x-d.dx, y-d.dy, dir
         return
+
+      if v is 'shuttle' then for {dx, dy},d in DIRS
+        v2 = grid.get x+dx, y+dy
+        if v2 != 'shuttle'
+          @pushEdges.add x, y, d
 
       buffer.pump x, y
 
       blobGrid.set x, y, this
 
       @size++
-      @points.set x, y, v2
+      @points.set x, y, v
 
       for {dx, dy},dir in DIRS
         hmm x+dx, y+dy, dir
@@ -166,10 +170,10 @@ BlobFiller = (type, grid) ->
 
     assert @size
     if type is 'engine'
-      @type = v
-      @pressure = (if v is 'positive' then 1 else -1) * @size
+      @type = v0
+      @pressure = (if v0 is 'positive' then 1 else -1) * @size
 
-    log "Added #{type}", this
+    log @id, ", Added #{type}", this
     addWatch.signal this
     return
 
@@ -337,8 +341,9 @@ FillGrid = (shuttleStates) ->
     # Populate the fill list
     state.shuttle.points.forEach (x, y, v) ->
       if v is 'shuttle' and state.valid
+        #log "adding #{state.id} to #{x}, #{y}"
         x += state.dx; y += state.dy
-        fillGrid.get(x, y).add state
+        fillGrid.getDef(x, y).add state
         fillKey.delete x, y
         pointWatch.signal x, y
 
@@ -498,7 +503,7 @@ CellGroups = (grid, engines, fillGrid) ->
       useless: true
       engines: new Set # Engines this group contains
 
-    log 'makeGroupAt', x, y, c, "'#{key}'", 'id:', group._id
+    log group._id, ': makeGroupAt', x, y, c, "'#{key}'"
 
     util.fill3 x, y, c, (x, y, c, hmm) ->
       v = grid.get x, y
@@ -536,7 +541,7 @@ CellGroups = (grid, engines, fillGrid) ->
       return
 
     groups.add group
-    log 'made group', group._id, group.points unless group.useless
+    log group._id, ': made group', group.points unless group.useless
     assert group.size
     assert group.used
     return group
@@ -631,7 +636,7 @@ StateForce = (shuttleStates, groups) ->
     force.x?.default = -> 0
     force.y?.default = -> 0
 
-    if canMoveX || canMoveY then state.shuttle.edges.forEach (x, y, dir) ->
+    if canMoveX || canMoveY then state.shuttle.pushEdges.forEach (x, y, dir) ->
       x += state.dx; y += state.dy
       if dir in [LEFT, RIGHT]
         return if !canMoveX
@@ -649,7 +654,11 @@ StateForce = (shuttleStates, groups) ->
       stateWithGroup.set group, state
       map.set group, map.getDef(group) + f
 
-    #log 'makeForce', state, forceX, forceY
+    for set in [force.x, force.y] when set
+      set.forEach (pressure, group) ->
+        set.delete group if pressure is 0
+
+    log '-> makeForce', force
     force
 
   get: (state) -> stateForce.getDef state
@@ -679,7 +688,7 @@ GroupConnections = (cellGroups) ->
     gc.complete = true
     group.edges.forEach (x, y, c) ->
       g2 = cellGroups.get x, y, c
-      log 'g2', g2
+      #log 'g2', g2
       assert g2
       assert g2.used
       gc.add g2
@@ -770,7 +779,6 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     watch.signal region
 
   Region = (group0, trimmedStates, shuttleStateMap) ->
-    log 'createRegion from group', group0._id#, shuttleStateMap
     assert regionsForGroup.getDef(group0).isDefinedFor shuttleStateMap
 
     shuttleKey = group0.shuttleKey
@@ -782,6 +790,8 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     @states = trimmedStates # Set of required states for use
     @edges = new Set # Set of adjacent groups
     @engines = new Set # Hoisted from groups
+
+    log @_id, ': createRegion from group', group0._id#, shuttleStateMap
 
     util.fillGraph group0, (group, hmm) =>
       # There's three reasons we won't connect a region across group lines:
@@ -809,7 +819,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       
     assert @size
     regions.add this
-    log 'Made region', @_id, 'with groups', @groups.map((g) -> {id:g._id, points:g.points})
+    log @_id, ': Made region with groups', @groups.map((g) -> {id:g._id, points:g.points})
     return
 
   makeRegion = (group, shuttleStateMap) ->
@@ -845,9 +855,9 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
   get: (group, shuttleStateMap) ->
     map = regionsForGroup.getDef group
     region = map.get shuttleStateMap
-    return null if region is null # The group is filled right now.
+    region = makeRegion group, shuttleStateMap if region is undefined
 
-    region = makeRegion group, shuttleStateMap if !region
+    return null if region is null # The group is filled right now.
 
     return region
 
@@ -865,7 +875,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     assert.equal 0, regions.size
 
 
-CurrentStates = (shuttles, stateForce, shuttleStates) ->
+CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   # This stores & propogates the shuttle states.
   currentStates = new Map # shuttle -> state.
 
@@ -895,6 +905,14 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
     patch.delete s
 
+  stepWatch.on (time) ->
+    if time is 'after'
+      # Call this at the end of step()
+      patch.forEach (state, shuttle) ->
+        currentStates.set shuttle, state
+        endStepWatch.signal shuttle, state
+      patch.clear()
+ 
   map: currentStates
   watch: endStepWatch
 
@@ -902,13 +920,6 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     patch.set shuttle, state
     immediateWatch.signal shuttle, state
 
-  rotate: ->
-    # Call this at the end of step()
-    patch.forEach (state, shuttle) ->
-      currentStates.set shuttle, state
-      endStepWatch.signal shuttle, state
-    patch.clear()
- 
   immediateWatch: immediateWatch
   getImmediate: (shuttle) ->
     patch.get(shuttle) || currentStates.get(shuttle)
@@ -957,7 +968,7 @@ Zones = (regions, currentStates) ->
 
       _debug_regions: new Set # For debugging.
 
-    log 'makezone', zone._id
+    log zone._id, ': makezone from', r0._id
 
     # Set of shuttles - if the state of any of these shuttles changes, the zone must die.
     #dependancies = new Set
@@ -965,7 +976,7 @@ Zones = (regions, currentStates) ->
     engines = new Set
 
     util.fillGraph r0, (r, hmm) ->
-      log 'fillGraph', r._id, zoneForRegion.get(r)
+      log 'zone fillGraph', r._id, zoneForRegion.get(r)
       assert !zoneForRegion.get(r)?.used
       zoneForRegion.set r, zone
       zone._debug_regions.add r
@@ -984,6 +995,12 @@ Zones = (regions, currentStates) ->
       r.edges.forEach (group) ->
         assert group.used
         r = regions.get group, currentStates.map
+        if r is null
+          # We were stymied because the group is filled at the moment.
+          # The group could be filled by any one of the shuttles in
+          # group.shuttles - we could go looking to find which one, but for now
+          # I'm just going to add them all as dependancies.
+          zonesDependingOnShuttle.getDef(shuttle).add zone for shuttle in group.shuttles
         # r is null if the group is currently filled.
         hmm r if r
 
@@ -1226,7 +1243,7 @@ module.exports = Jit = (rawGrid) ->
   stateForce = StateForce shuttleStates, cellGroups
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
-  currentStates = CurrentStates shuttles, stateForce, shuttleStates
+  currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
   zones = Zones regions, currentStates
   dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
 
@@ -1302,6 +1319,7 @@ module.exports = Jit = (rawGrid) ->
         f.forEach (mult, group) ->
           log 'f.forEach', group
           zone = zones.getZoneForGroup group
+          #return if zone is null # Zone is null if the group is filled.
           assert zone.used
           log 'pressure', zone.pressure
           deps.add zone
@@ -1337,7 +1355,6 @@ module.exports = Jit = (rawGrid) ->
             
     # Tell everyone about how the current states changed. This will destroy any
     # zones for the next step() call.
-    currentStates.rotate()
     stepWatch.signal 'after'
 
   check: (invasive) ->
@@ -1353,37 +1370,6 @@ module.exports = Jit = (rawGrid) ->
     regions.checkEmpty()
     zones.checkEmpty()
 
-  torture: ->
-    randomValue = randomWeighted [
-      null, 2
-      'nothing', 10
-      'positive', 1
-      'negative', 1
-      'shuttle', 1
-      'thinshuttle', 1
-    ]
-
-    for iter in [1...1000]
-      log "----- iter #{iter}"
-      for [1...10]
-        x = mersenne.rand() % 4
-        y = mersenne.rand() % 4
-        v = randomValue()
-        log 'set', x, y, v
-        grid.set x, y, v
-
-      @printGrid()
-
-      try
-        invasive = iter % 2 == 0
-        @check invasive
-        
-        @step()
-      catch e
-        log '****** CRASH ******'
-        #@printGrid()
-        throw e
-
   printGrid: ->
     overlay = new Map2
     shuttles.forEach (s) ->
@@ -1398,6 +1384,16 @@ module.exports = Jit = (rawGrid) ->
         v = grid.get x, y
         if v in ['shuttle', 'thinshuttle'] then 'nothing' else v
 
+  toJSON: ->
+    json = {}
+    grid.forEach (x, y, v) ->
+      v = 'nothing' if v in ['shuttle', 'thinshuttle']
+      json["#{x},#{y}"] = v if v?
+    shuttles.forEach (s) ->
+      {dx, dy} = state = currentStates.map.get s
+      s.points.forEach (x, y, v) ->
+        json["#{x+dx},#{y+dy}"] = v
+    json
 
   grid: grid
   groups: cellGroups
