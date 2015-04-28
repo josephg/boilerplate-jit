@@ -220,7 +220,7 @@ exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, 
   top ||= 0; left ||= 0
 
   # Header
-  stream.write '  '
+  stream.write '+ '
   for x in [left..right]
     stream.write "#{x%10}"
   stream.write '\n'
@@ -232,7 +232,7 @@ exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, 
       stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
     stream.write '\n'
 
-  stream.write '  '
+  stream.write '+ '
   for x in [left..right]
     stream.write "#{x%10}"
   stream.write '\n'

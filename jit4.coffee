@@ -1054,22 +1054,23 @@ Collapser = (grid, shuttles, shuttleStates, currentStates) ->
       stateGrid.get(x, y).delete state.shuttle
       watch.signal x, y
 
+  collapse = (shuttle) ->
+    log 'collapsing shuttle'
+    state = currentStates.map.get shuttle
+    {dx, dy} = state
+
+    shuttle.points.forEach (sx, sy, sv) ->
+      grid.set sx, sy, 'nothing' unless sx is x and sy is y
+
+    shuttle.points.forEach (sx, sy, sv) ->
+      sx += dx; sy += dy
+      grid.set sx, sy, sv unless sx is x and sy is y
+    #shuttles.collapse shuttle, state.dx, state.dy
+
+    log grid.toJSON()
+
   grid.watch.forward (x, y, oldV, v) ->
-    if set = stateGrid.get x, y
-      set.forEach (shuttle) ->
-        log 'collapsing shuttle'
-        state = currentStates.map.get shuttle
-        {dx, dy} = state
-
-        shuttle.points.forEach (sx, sy, sv) ->
-          grid.set sx, sy, 'nothing' unless sx is x and sy is y
-
-        shuttle.points.forEach (sx, sy, sv) ->
-          sx += dx; sy += dy
-          grid.set sx, sy, sv unless sx is x and sy is y
-        #shuttles.collapse shuttle, state.dx, state.dy
-
-        log grid.toJSON()
+    stateGrid.get(x, y)?.forEach collapse
 
 
 ### # I'm holding off on writing this because its really just an optimization of group edges.
@@ -1282,10 +1283,26 @@ module.exports = Jit = (rawGrid) ->
         #@debugPrint()
         throw e
 
+  printGrid: ->
+    overlay = new Map2
+    shuttles.forEach (s) ->
+      {dx, dy} = state = currentStates.map.get s
+      s.points.forEach (x, y, v) ->
+        overlay.set x+dx, y+dy, v
+
+    util.printCustomGrid util.gridExtents(grid), (x, y) ->
+      if v = overlay.get x, y
+        return v
+      else
+        v = grid.get x, y
+        if v in ['shuttle', 'thinshuttle'] then 'nothing' else v
+
+
   grid: grid
   groups: cellGroups
   shuttles: shuttles
   engines: engines
+
 
 ###
 start = Date.now()
@@ -1310,16 +1327,18 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
-  util.printGrid util.gridExtents(jit.grid), jit.grid
+  jit.printGrid()
+  #util.printGrid util.gridExtents(jit.grid), jit.grid
 
   jit.torture() if torture
 
   if !torture
     jit.step()
-    jit.step()
+    jit.printGrid()
+    #jit.step()
 
     log '-----'
-    jit.grid.set 5, 2, null
+    #jit.grid.set 5, 2, null
   
 if require.main == module
   filename = process.argv[2]
