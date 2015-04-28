@@ -427,7 +427,7 @@ CellGroups = (grid, engines, fillGrid) ->
       deleteGroup group if group
 
   deleteGroup = (group) ->
-    log 'deleting group', group._id
+    log group._id, ': deleting group'
     assert group.used
 
     # Invalidate g!
@@ -601,7 +601,8 @@ StateForce = (shuttleStates, groups) ->
   stateForce = new Map # state -> force.
   stateForce.default = (state) -> makeForce state
 
-  stateWithGroup = new Map # group -> state
+  stateForGroup = new Map # group -> set of states
+  stateForGroup.default = -> new Set
   
   # This could be eager or lazy. If we're eager there's a potential race
   # condition: a new state is created, the fillgrid invalidates some groups
@@ -610,12 +611,27 @@ StateForce = (shuttleStates, groups) ->
   #
   # So we'll just generate forces lazily, when the shuttle is actually needed.
   shuttleStates.deleteWatch.on (state) ->
-    force = stateForce.get state
-    if force
+    deleteForce state
+
+  groups.watch.on (group) ->
+    #log 'got group deleted', group._id
+    if (set = stateForGroup.get group)
+      set.forEach (state) -> deleteForce state
+
+      # These should be cleaned up in deleteForce when they're empty.
+      assert !stateForGroup.has group
+
+  deleteForce = (state) ->
+    if (force = stateForce.get state)
       stateForce.delete state
 
-      delGroups = (state, group) ->
-        stateWithGroup.delete group
+      #log 'deleteForce', force
+
+      delGroups = (pressure, group) ->
+        if (set = stateForGroup.get group)
+          set.delete state
+          stateForGroup.delete group if set.size is 0
+
       force.x?.forEach delGroups
       force.y?.forEach delGroups
 
@@ -651,12 +667,14 @@ StateForce = (shuttleStates, groups) ->
       group = groups.getDir x+dx, y+dy, util.oppositeDir dir
       return unless group
 
-      stateWithGroup.set group, state
       map.set group, map.getDef(group) + f
 
-    for set in [force.x, force.y] when set
-      set.forEach (pressure, group) ->
-        set.delete group if pressure is 0
+    for map in [force.x, force.y] when map
+      map.forEach (pressure, group) ->
+        if pressure is 0
+          map.delete group
+        else
+          stateForGroup.getDef(group).add state
 
     log '-> makeForce', force
     force
@@ -721,6 +739,7 @@ GroupConnections = (cellGroups) ->
     connections.forEach (set, group) ->
       assert set.complete if invasive
       return unless set.complete
+      log 'gggg', group
       assert group.used
       set.forEach (g2) ->
         assert g2.used
@@ -1152,7 +1171,7 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
 
     #shuttles.collapse shuttle, state.dx, state.dy
 
-    log grid.toJSON()
+    #log grid.toJSON()
 
     collapseWatch.signal state
 
@@ -1230,7 +1249,6 @@ RegionConnections = (cellGroups, regions) ->
 
 module.exports = Jit = (rawGrid) ->
   grid = Grid rawGrid
-  #engineBuffer = GridBuffer ['positive', 'negative'], grid
 
   # This is a watcher which emits events just before & after step().
   stepWatch = new Watcher
@@ -1250,52 +1268,10 @@ module.exports = Jit = (rawGrid) ->
 
   shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
 
-  #engines.forEach (e) ->
-  #  log 'engine', e
-  #shuttles.forEach (s) ->
-  #  log 'shuttle', s
-  #grid.set 2,0, 'shuttle'
-  #shuttles.forEach (s) ->
-  #  log 'shuttle', s
-
-  #grid.set 3, 0, null
-
-
-  #cellGroups.forEach (group) ->
-  #  log 'group', group
-  #  log 'connections', groupConnections.get group
-  #grid.set 6, 2, 'nothing'
-
-  ###
-  cellGroups.forEach (group) ->
-    log 'region', regions.get group, currentState
-  ###
-
-
-  ###
-
-
-  dangerousShuttles = new Set # Shuttles which might move next tick
-  shuttles.forEach (s) ->
-    currentState.set s, shuttleStates.getInitialState(s)
-    dangerousShuttles.add s
-  
-  grid.forEach (x, y, v) ->
-    log 'fillKey', x, y, fillGrid.getFillKey x, y
-
-  grid.set 3, 0, null
-  grid.forEach (x, y, v) ->
-    log 'fillKey', x, y, fillGrid.getFillKey x, y
-
-  ###
   zones: zones
   step: ->
     log '------------ STEP ------------'
     shuttles.flush()
-
-    #currentStates.map.forEach (state, shuttle) ->
-    #  log 'active state', state
-    #  log 'force', stateForce.get state
 
     dirtyShuttles.forEach (shuttle) ->
       log 'dirty shuttle', shuttle
@@ -1318,6 +1294,7 @@ module.exports = Jit = (rawGrid) ->
 
         f.forEach (mult, group) ->
           log 'f.forEach', group
+          assert group.used
           zone = zones.getZoneForGroup group
           #return if zone is null # Zone is null if the group is filled.
           assert zone.used
