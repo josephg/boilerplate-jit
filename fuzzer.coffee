@@ -53,27 +53,23 @@ printPressure = (pressureGrid) ->
 debugPrint = ->
   util.printGrid EXTENTS, jit.grid
 
-#log.quiet = true
+log.quiet = true
 fuzz = ->
   start = Date.now()
-  for iter in [1...10000]
-    if !(iter % 1000)
-      end = Date.now()
-      console.log "#{end-start}ms ----- iter #{iter}"
-      start = end
-    #log.quiet = false if iter is 26
+  for iter in [1..10000]
+    #log.quiet = false if iter is 351
     #debugPrint()
-    jit.check()
+    #jit.check()
     for [1...5]
       x = mersenne.rand() % SIZE
       y = mersenne.rand() % SIZE
       v = randomValue()
-      #log 'set', x, y, v
+      log 'set', x, y, v
 
       sim.set x, y, v
       jit.grid.set x, y, v
 
-    debugPrint()
+    #debugPrint()
 
     try
       simPressure = sim.getPressure()
@@ -84,8 +80,9 @@ fuzz = ->
         return unless zone
         #log 'zone', zone.pressure #, zone, group
         if zone.pressure
-          #log 'zone with pressure:', zone.pressure
+          #log 'zone with pressure:', zone.pressure, zone
           group.points.forEach (x, y) ->
+            #log 'p', x, y, zone.pressure
             jitPressure[[x,y]] = zone.pressure
 
       for k, v of simPressure
@@ -110,12 +107,25 @@ fuzz = ->
       debugPrint()
       throw e
 
+    unless iter % 10000
+      end = Date.now()
+      console.log "#{end-start}ms ----- iter #{iter}", process.memoryUsage?()
+      start = end
 
   for x in [0...SIZE]
     for y in [0...SIZE]
       sim.set x, y, null
       jit.grid.set x, y, null
 
+  jit.grid.forEach (x, y, v) ->
+    sim.set x, y, null
+    jit.grid.set x, y, null
+
+  jit.checkEmpty()
+
 window?.fuzz = fuzz
 
-fuzz()
+mainStart = Date.now()
+if process.title is 'node'
+  fuzz() for [1..10]
+console.log "total time", Date.now() - mainStart

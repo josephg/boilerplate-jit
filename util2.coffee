@@ -103,9 +103,10 @@ connectedCells = exports.connectedCells = (grid, x, y, c) ->
 
 
 # Flood fill through the grid from a cell
-exports.fillCells = (grid, initialX, initialY, initialC, f) ->
-  visited = new Set3 [[initialX, initialY, initialC]]
-  explore = [initialX, initialY, initialC]
+exports.fill3 = (a0, b0, c0, f) ->
+  visited = new Set3
+  visited.add a0, b0, c0
+  explore = [a0, b0, c0]
 
   # Consider a cell
   hmm = (x, y, c) ->
@@ -114,14 +115,9 @@ exports.fillCells = (grid, initialX, initialY, initialC, f) ->
       explore.push x; explore.push y; explore.push c
 
   while explore.length > 0
-    x = explore.shift(); y = explore.shift(); c = explore.shift()
+    a = explore.shift(); b = explore.shift(); c = explore.shift()
     
-    v = grid.get x, y
-    continue unless v # No walls.
-    if f x, y, c, v, hmm
-      # Hmm for each potentially adjacent cell.
-      for [x2, y2, c2] in connectedCells grid, x, y, c
-        hmm x2, y2, c2||0
+    f a, b, c, hmm
 
   return
 
