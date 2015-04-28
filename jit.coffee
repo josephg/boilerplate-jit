@@ -279,7 +279,7 @@ ShuttleStates = (grid, shuttles) ->
 
     #log 'created new state', state
     addWatch.signal state if valid
-    log 'made shuttle state', state if valid
+    log 'made shuttle state for shuttle', state.shuttle.id, state.dx, state.dy if valid
     return state
 
   flushStatesAt: (x, y) ->
@@ -511,12 +511,12 @@ CellGroups = (grid, engines, fillGrid) ->
       return unless v # Optimization.
 
       group.useless = no if v and v not in ['positive', 'negative']
-      log 'fillCells', x, y, c, v
       if fillGrid.getFillKey(x, y) != key
-        log "wrong fill key -> '#{fillGrid.getFillKey(x, y)}'"
+        #log "wrong fill key -> '#{fillGrid.getFillKey(x, y)}'"
         group.edges.add x, y, c
         edgeGrid.getDef(x, y).add group
         return
+      log 'fillCells', x, y, c, v
 
       group.points.set x, y, c, v
       group.size++
@@ -977,6 +977,7 @@ Zones = (regions, currentStates) ->
     z._debug_regions.forEach (r) ->
       log '-> with region', r._id
       zoneForRegion.delete r
+    watch.signal z
 
   makeZone = (r0) ->
     # Make a zone starting from the specified group.
@@ -995,7 +996,7 @@ Zones = (regions, currentStates) ->
     engines = new Set
 
     util.fillGraph r0, (r, hmm) ->
-      log 'zone fillGraph', r._id, zoneForRegion.get(r)
+      log 'zone fillGraph', r._id #, zoneForRegion.get(r)
       assert !zoneForRegion.get(r)?.used
       zoneForRegion.set r, zone
       zone._debug_regions.add r
@@ -1069,8 +1070,10 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
     dirty.delete s
 
   zones.watch.on (z) ->
+    #log 'zw', z._id
     # A zone was deleted. Set any relevant shuttles to dirty.
     if (set = shuttlesForZone.get z)
+      #log 'zones watch', z._id
       set.forEach (s) -> setDirty s
       shuttlesForZone.delete z
 
@@ -1081,12 +1084,12 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
   setDirty = (shuttle) ->
     dirty.add shuttle
 
-    if (deps = shuttleZoneDeps.get shuttle) and deps.size
+    if (deps = shuttleZoneDeps.get shuttle)
       # Clear dependancies.
       deps.forEach (z) ->
         shuttlesForZone.get(z).delete shuttle
 
-      deps.clear()
+      shuttleZoneDeps.delete shuttle
       
   # The shuttle is clean - but it will become dirty if these zones change.
   setCleanDeps: (shuttle, deps) ->
@@ -1327,7 +1330,7 @@ module.exports = Jit = (rawGrid) ->
 
       # The shuttle didn't move.
       dirtyShuttles.setCleanDeps shuttle, deps
-      log '----> shuttle did not move', shuttle
+      log '----> shuttle did not move', shuttle, deps
       #log 'deps', deps
             
     # Tell everyone about how the current states changed. This will destroy any
@@ -1407,9 +1410,9 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.torture() if torture
 
   if !torture
-    jit.step()
-    jit.step()
-    jit.printGrid()
+    for [1..3]
+      jit.step()
+      jit.printGrid()
 
     log '-----'
     #jit.grid.set 5, 2, null
