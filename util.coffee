@@ -237,12 +237,6 @@ exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, 
     stream.write "#{x%10}"
   stream.write '\n'
 
-exports.printJSONGrid = (extents, grid, stream = process.stdout) ->
-  printCustomGrid extents, ((x, y) -> grid[[x,y]]), stream
-
-exports.printGrid = (extents, grid, stream = process.stdout) ->
-  printCustomGrid extents, ((x, y) -> grid.get x, y), stream
-
 exports.gridExtents = (grid) ->
   # calculate the extents
   top = left = bottom = right = null
@@ -255,4 +249,23 @@ exports.gridExtents = (grid) ->
 
   {top, left, bottom, right}
 
+jsonExtents = (grid) ->
+  # calculate the extents
+  top = left = bottom = right = null
+
+  for k, v of grid
+    {x,y} = parseXY k
+    left = x if left is null || x < left
+    right = x if right is null || x > right
+    top = y if top is null || y < top
+    bottom = y if bottom is null || y > bottom
+
+  {top, left, bottom, right}
+
+exports.printJSONGrid = (grid, stream = process.stdout) ->
+  extents = jsonExtents grid
+  printCustomGrid extents, ((x, y) -> grid[[x,y]]), stream
+
+exports.printGrid = (extents, grid, stream = process.stdout) ->
+  printCustomGrid extents, ((x, y) -> grid.get x, y), stream
 
