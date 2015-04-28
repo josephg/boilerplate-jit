@@ -23,6 +23,12 @@ Map::getDef = WeakMap::getDef = (k) ->
     @set k, v
   return v
 
+Set::map = (fn) ->
+  result = new Set
+  @forEach (x) ->
+    result.add fn(x)
+  result
+
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
     @levelOne = new Map

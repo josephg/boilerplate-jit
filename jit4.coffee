@@ -105,7 +105,7 @@ BlobFiller = (type, grid) ->
 
   blobs = new Set
   blobGrid = new Map2 # x,y -> shuttle.
-  addWatch = new Watcher
+  addWatch = new Watcher (fn) -> blobs.forEach fn
   deleteWatch = new Watcher
 
   buffer.watch.on (x, y) ->
@@ -180,14 +180,16 @@ BlobFiller = (type, grid) ->
     buffer.data.forEach (x, y, v) ->
       new Blob x, y, v
 
+  flushAt: (x, y) ->
+    if v = buffer.data.get x, y
+      new Blob x, y, v
+
   forEach: (fn) ->
     @flush()
     blobs.forEach fn
 
   get: (x, y) ->
-    if v = buffer.data.get x, y
-      new Blob x, y, v
-
+    @flushAt x, y
     s = blobGrid.get x, y
     return s if s?.used
 
@@ -303,47 +305,6 @@ ShuttleStates = (grid, shuttles) ->
     return successor if successor.valid
 
 
-CurrentStates = (shuttles, shuttleStates) ->
-  # This stores & propogates the shuttle states.
-  currentStates = new Map # shuttle -> state.
-
-  # ... So, we don't want to tell everyone the current states have changed as
-  # soon as we move them - other shuttles might depend on the zones where they
-  # are. We'll hold any changes to the state map until step() is done then send
-  # them all.
-  patch = new Map
-
-  watch = new Watcher
-
-  shuttles.deleteWatch.on (s) -> currentStates.delete s
-  shuttles.addWatch.on (s) ->
-    state = shuttleStates.getInitialState s
-    currentStates.set s, state
-    watch.signal s, state
-
-  map: currentStates
-  watch: watch
-
-  set: (shuttle, state) -> patch.set shuttle, state
-
-  flush: ->
-    # Call this at the end of step()
-    patch.forEach (shuttle, state) ->
-      currentStates.set shuttle, state
-      watch.signal shuttle, state
-    patch.clear()
-
-
-DirtyStates = (currentStates) ->
-  # This keeps track of states which might move on the next step. This includes
-  # any shuttle which just moved, shuttles next to a zone which was
-  # just destroyed.
-  dirty = new Set
-
-  currentStates.watch.on (shuttle, state) ->
-    dirty.add shuttle
-
-
 FillGrid = (shuttleStates) ->
   # Set of states which fill a given grid cell
   fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
@@ -454,7 +415,7 @@ CellGroups = (grid, engines, fillGrid) ->
       deleteGroup group if group
 
   deleteGroup = (group) ->
-    #log 'deleting group', group
+    log 'deleting group', group._id
     assert group.used
 
     # Invalidate g!
@@ -512,6 +473,7 @@ CellGroups = (grid, engines, fillGrid) ->
     shuttles = util.uniqueShuttlesInStates filledStates
 
     group =
+      _id: makeId()
       used: yes
       size: 0 # For debugging
       fillKey: key # We could just request this out of fillGrid, but its handy.
@@ -523,7 +485,7 @@ CellGroups = (grid, engines, fillGrid) ->
       useless: true
       engines: new Set # Engines this group contains
 
-    #log 'makeGroupAt', x, y, c, key
+    log 'makeGroupAt', x, y, c, key, 'id:', group._id
 
     util.fill3 x, y, c, (x, y, c, hmm) ->
       v = grid.get x, y
@@ -557,7 +519,7 @@ CellGroups = (grid, engines, fillGrid) ->
 
     assert group.size
     groups.add group
-    #log 'made group', group unless group.useless
+    log 'made group', group._id, group.points unless group.useless
     return group
 
   watch: watch
@@ -624,7 +586,14 @@ StateForce = (shuttleStates, groups) ->
   #
   # So we'll just generate forces lazily, when the shuttle is actually needed.
   shuttleStates.deleteWatch.on (state) ->
-    stateForce.delete state
+    force = stateForce.get state
+    if force
+      stateForce.delete state
+
+      delGroups = (state, group) ->
+        stateWithGroup.delete group
+      force.x?.forEach delGroups
+      force.y?.forEach delGroups
 
   makeForce = (state) ->
     log 'makeForce', state
@@ -636,30 +605,33 @@ StateForce = (shuttleStates, groups) ->
     canMoveY = shuttleStates.getStateNear(state, UP) or
       shuttleStates.getStateNear(state, DOWN)
 
-    forceX = new Map # group -> force (number)
-    forceX.default = -> 0
-    forceY = new Map # group -> force (number)
-    forceY.default = -> 0
+    force =
+      x: if canMoveX then new Map
+      y: if canMoveY then new Map
 
-    state.shuttle.edges.forEach (x, y, dir) ->
+    force.x?.default = -> 0
+    force.y?.default = -> 0
+
+    if canMoveX || canMoveY then state.shuttle.edges.forEach (x, y, dir) ->
       x += state.dx; y += state.dy
       if dir in [LEFT, RIGHT]
         return if !canMoveX
-        map = forceX
+        map = force.x
         f = if dir is LEFT then -1 else 1
       else
         return if !canMoveY
-        map = forceY
+        map = force.y
         f = if dir is UP then -1 else 1
 
       {dx, dy} = DIRS[dir]
       group = groups.getDir x+dx, y+dy, util.oppositeDir dir
       return unless group
 
+      stateWithGroup.set group, state
       map.set group, map.getDef(group) + f
 
-    log 'makeForce', state, forceX, forceY
-    {forceX, forceY}
+    #log 'makeForce', state, forceX, forceY
+    force
 
   get: (state) -> stateForce.getDef state
 
@@ -798,11 +770,12 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
   getTrimmedStates = (shuttles, filledStates, shuttleStateMap) ->
 
   Region = (group0, trimmedStates, shuttleStateMap) ->
-    #log 'createRegion', group0, shuttleStateMap
+    log 'createRegion from group', group0._id#, shuttleStateMap
     assert regionsForGroup.getDef(group0).isDefinedFor shuttleStateMap
 
     shuttleKey = group0.shuttleKey
 
+    @_id = makeId()
     @used = yes
     @size = 0
     @groups = new Set
@@ -827,7 +800,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       return if filled
 
       # Ok, we're looking good.
-      regionsForGroup.getDef(group).set trimmedStates, this
+      regionsForGroup.getDef(group).set shuttleStateMap, this
       @size++
       @groups.add group
       group.engines.forEach (e) => @engines.add e
@@ -836,6 +809,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       
     assert @size
     regions.add this
+    log 'Made region', @_id, 'with groups', @groups.map((g) -> {id:g._id, points:g.points})
     return
 
   makeRegion = (group, shuttleStateMap) ->
@@ -890,6 +864,39 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     assert.equal 0, regionsTouchingGroup.size
     assert.equal 0, regions.size
 
+
+CurrentStates = (shuttles, stateForce, shuttleStates) ->
+  # This stores & propogates the shuttle states.
+  currentStates = new Map # shuttle -> state.
+
+  # ... So, we don't want to tell everyone the current states have changed as
+  # soon as we move them - other shuttles might depend on the zones where they
+  # are. We'll hold any changes to the state map until step() is done then send
+  # them all.
+  patch = new Map
+
+  watch = new Watcher
+
+  shuttles.addWatch.forward (s) ->
+    state = shuttleStates.getInitialState s
+    currentStates.set s, state
+    watch.signal s, state
+  shuttles.deleteWatch.on (s) ->
+    currentStates.delete s
+
+  map: currentStates
+  watch: watch
+
+  set: (shuttle, state) -> patch.set shuttle, state
+
+  rotate: ->
+    # Call this at the end of step()
+    patch.forEach (shuttle, state) ->
+      currentStates.set shuttle, state
+      watch.signal shuttle, state
+    patch.clear()
+ 
+
 Zones = (regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
   # shuttle states.  These are constantly destroyed & regenerated as shuttles
@@ -915,20 +922,25 @@ Zones = (regions, currentStates) ->
 
   deleteZone = (z) ->
     return unless z?.used
+    log 'deleting zone', z._id
     z.used = false
     zones.delete z
     #log 'deleted zone', z
     #zoneForRegion.delete 
     z._debug_regions.forEach (r) ->
+      log 'dr', r._id
       zoneForRegion.delete r
 
   makeZone = (r0) ->
     # Make a zone starting from the specified group.
     zone =
+      _id: makeId() # For debugging
       used: true
       pressure: 0
 
       _debug_regions: new Set # For debugging.
+
+    log 'makezone', zone._id
 
     # Set of shuttles - if the state of any of these shuttles changes, the zone must die.
     #dependancies = new Set
@@ -936,11 +948,11 @@ Zones = (regions, currentStates) ->
     engines = new Set
 
     util.fillGraph r0, (r, hmm) ->
+      log 'fillGraph', r._id, zoneForRegion.get(r)?
       assert !zoneForRegion.get(r)?.used
       zoneForRegion.set r, zone
       zone._debug_regions.add r
 
-      log r
       r.states.forEach (state) ->
         #dependancies.add state.shuttle
         zonesDependingOnShuttle.getDef(state.shuttle).add zone
@@ -978,6 +990,66 @@ Zones = (regions, currentStates) ->
   checkEmpty: ->
     assert.equal 0, zones.size
     assert.equal 0, zoneForRegion.size
+
+
+DirtyShuttles = (shuttles, currentStates, zones) ->
+  # This keeps track of shuttles which might move on the next step. This includes
+  # any shuttle which just moved, shuttles next to a zone which was
+  # just destroyed.
+  dirty = new Set # set of shuttles
+
+  # Ugh, this is way more complicated than it needs to be.
+  #
+  # If a zone is destroyed, we need a list of all the shuttles which need to be
+  # marked dirty.
+  # If a shuttle gets marked dirty, we need to remove that list.
+  shuttlesForZone = new Map # Zone -> Set of shuttles
+  shuttlesForZone.default = -> new Set
+  shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
+  shuttleZoneDeps.default = -> new Set
+
+  shuttles.deleteWatch.on (s) ->
+    # A shuttle was deleted.
+    deps = shuttleZoneDeps.get s
+    if deps
+      deps.forEach (z) -> shuttlesForZone.get(z).delete s
+      shuttleZoneDeps.delete s
+
+  zones.watch.on (z) ->
+    # A zone was deleted. Set any relevant shuttles to dirty.
+    if (set = shuttlesForZone.get z)
+      set.forEach (s) -> setDirty s
+      shuttlesForZone.delete z
+
+  # The state changed. Make that sucker dirty.
+  currentStates.watch.on (shuttle, state) ->
+    setDirty shuttle
+
+  setDirty = (shuttle) ->
+    dirty.add shuttle
+
+    if (deps = shuttleZoneDeps.get shuttle) and deps.size
+      # Clear dependancies.
+      deps.forEach (z) ->
+        shuttlesForZone.get(z).delete shuttle
+
+      deps.clear()
+      
+
+  # Really, this is mostly so I can reuse the set object.
+  getDepSetFor: (shuttle) ->
+    return shuttleZoneDeps.getDef shuttle
+
+  # The shuttle is clean - but it will become dirty if these zones change.
+  setCleanDeps: (shuttle, deps) ->
+    # A dirty shuttle didn't move.
+    dirty.delete shuttle
+
+    deps.forEach (z) ->
+      shuttlesForZone.getDef(z).add shuttle
+
+  forEach: (fn) -> dirty.forEach fn
+
 
 
 
@@ -1038,10 +1110,9 @@ module.exports = Jit = (rawGrid) ->
   stateForce = StateForce shuttleStates, cellGroups
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
-
-  currentStates = CurrentStates shuttles, shuttleStates
-
+  currentStates = CurrentStates shuttles, stateForce, shuttleStates
   zones = Zones regions, currentStates
+  dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
 
   #engines.forEach (e) ->
   #  log 'engine', e
@@ -1083,23 +1154,68 @@ module.exports = Jit = (rawGrid) ->
   ###
   zones: zones
   step: ->
+    log '------------ STEP ------------'
     shuttles.flush()
 
-    currentStates.map.forEach (state, shuttle) ->
-      log 'active state', state
-      log 'force', stateForce.get state
-    # 1. Calculate up/down force
-    #   - Get all neighboring zones given current state
-    #
-    #
-    # 2. Try and move up/down if needed
-    #
-    # 3. Calculate left/right force
-    # 4. Try and move left/right, ...
+    #currentStates.map.forEach (state, shuttle) ->
+    #  log 'active state', state
+    #  log 'force', stateForce.get state
 
+    dirtyShuttles.forEach (shuttle) ->
+      log 'dirty shuttle', shuttle
+       
+      # Consider moving the shuttle.
+      state = currentStates.map.get shuttle
+      force = stateForce.get state
 
-    # ...
-    currentStates.flush()
+      # Set of zones which, when deleted, will make the shuttle dirty again.
+      # This is only used if the shuttle doesn't move. If it moves, it'll
+      # become dirty again anyway.
+      deps = dirtyShuttles.getDepSetFor shuttle
+      assert deps.size is 0
+
+      # Y first.
+      for d in ['y', 'x'] when (f = force[d])
+        impulse = 0
+
+        f.forEach (mult, group) ->
+          zone = zones.getZoneForGroup group
+          assert zone.used
+          log 'pressure', zone.pressure
+          deps.add zone
+
+          impulse += mult * zone.pressure
+          
+        continue unless impulse
+
+        dir = if impulse < 0
+          if d is 'y' then UP else LEFT
+        else
+          if d is 'y' then DOWN else RIGHT
+
+        moved = no
+        impulse = Math.abs impulse
+        while impulse
+          break unless (next = shuttleStates.getStateNear state, dir)
+          state = next
+          moved = yes
+          impulse--
+          
+        if moved
+          log 'shuttle moved to', state
+          currentStates.set shuttle, state
+          deps.clear()
+          # The shuttle is still dirty - so we're kinda done here.
+          return
+
+      # The shuttle didn't move.
+      dirtyShuttles.setCleanDeps shuttle, deps
+      log 'shuttle did not move', shuttle
+      log 'deps', deps
+            
+    # Tell everyone about how the current states changed. This will destroy any
+    # zones for the next step() call.
+    currentStates.rotate()
 
   check: (invasive) ->
     shuttles.check invasive

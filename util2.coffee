@@ -204,7 +204,9 @@ exports.fillGraph = (initialNode, f) ->
   explore = []
 
   hmm = (node) ->
-    explore.push node if !visited.has node
+    if !visited.has node
+      visited.add node
+      explore.push node
   hmm initialNode
 
   while explore.length > 0
