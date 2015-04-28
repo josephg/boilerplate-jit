@@ -6,6 +6,8 @@ log = require './log'
 assert = require 'assert'
 mersenne = require 'mersenne'
 
+UP=0; RIGHT=1; DOWN=2; LEFT=3
+
 makeId = do ->
   nextId = 1
   -> nextId++
@@ -268,7 +270,7 @@ ShuttleStates = (grid, shuttles) ->
       shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
     #log 'created new state', state
-    addWatch.signal state
+    addWatch.signal state if valid
     return state
 
   flushStatesAt: (x, y) ->
@@ -293,12 +295,12 @@ ShuttleStates = (grid, shuttles) ->
 
     {dx, dy} = DIRS[dir]
     dx += state.dx; dy += state.dy
-    successor = shuttleStates.get(s).get dx, dy
+    successor = shuttleStates.get(state.shuttle).get dx, dy
 
-    if successor is null
+    if !successor?
       successor = createStateAt state.shuttle, dx, dy
 
-    return successor
+    return successor if successor.valid
 
 
 CurrentStates = (shuttles, shuttleStates) ->
@@ -340,7 +342,6 @@ DirtyStates = (currentStates) ->
 
   currentStates.watch.on (shuttle, state) ->
     dirty.add shuttle
-    
 
 
 FillGrid = (shuttleStates) ->
@@ -576,6 +577,20 @@ CellGroups = (grid, engines, fillGrid) ->
 
     return g if !g.useless
 
+  getDir: (x, y, dir) ->
+    v = grid.get x, y
+    return unless v
+
+    c = switch v
+      when 'positive', 'negative'
+        dir
+      when 'bridge'
+        dir % 2
+      else
+        0
+
+    @get x, y, c
+
   forEach: (fn) ->
     # This is an interesting function - more useful for debugging than anything
     # else. By fetching all groups, you'll force them all to get generated. Not
@@ -594,6 +609,59 @@ CellGroups = (grid, engines, fillGrid) ->
   checkEmpty: ->
     assert.equal 0, groups.size
     assert.equal 0, groupGrid.size
+
+StateForce = (shuttleStates, groups) ->
+  # For each shuttle state, we need to know which groups apply a force.
+  stateForce = new Map # state -> force.
+  stateForce.default = (state) -> makeForce state
+
+  stateWithGroup = new Map # group -> state
+  
+  # This could be eager or lazy. If we're eager there's a potential race
+  # condition: a new state is created, the fillgrid invalidates some groups
+  # then we look at those groups to determine who applies force. If we look at
+  # the groups before they're invalidated, it could give us n^2 performance.
+  #
+  # So we'll just generate forces lazily, when the shuttle is actually needed.
+  shuttleStates.deleteWatch.on (state) ->
+    stateForce.delete state
+
+  makeForce = (state) ->
+    log 'makeForce', state
+    assert state.shuttle.used
+    assert state.valid
+
+    canMoveX = shuttleStates.getStateNear(state, LEFT) or
+      shuttleStates.getStateNear(state, RIGHT)
+    canMoveY = shuttleStates.getStateNear(state, UP) or
+      shuttleStates.getStateNear(state, DOWN)
+
+    forceX = new Map # group -> force (number)
+    forceX.default = -> 0
+    forceY = new Map # group -> force (number)
+    forceY.default = -> 0
+
+    state.shuttle.edges.forEach (x, y, dir) ->
+      x += state.dx; y += state.dy
+      if dir in [LEFT, RIGHT]
+        return if !canMoveX
+        map = forceX
+        f = if dir is LEFT then -1 else 1
+      else
+        return if !canMoveY
+        map = forceY
+        f = if dir is UP then -1 else 1
+
+      {dx, dy} = DIRS[dir]
+      group = groups.getDir x+dx, y+dy, util.oppositeDir dir
+      return unless group
+
+      map.set group, map.getDef(group) + f
+
+    log 'makeForce', state, forceX, forceY
+    {forceX, forceY}
+
+  get: (state) -> stateForce.getDef state
 
 
 GroupConnections = (cellGroups) ->
@@ -967,6 +1035,7 @@ module.exports = Jit = (rawGrid) ->
   fillGrid = FillGrid shuttleStates
   stateGrid = StateGrid shuttleStates
   cellGroups = CellGroups grid, engines, fillGrid
+  stateForce = StateForce shuttleStates, cellGroups
   groupConnections = GroupConnections cellGroups
   regions = Regions fillGrid, cellGroups, groupConnections
 
@@ -985,16 +1054,12 @@ module.exports = Jit = (rawGrid) ->
   #grid.set 3, 0, null
 
 
-  cellGroups.forEach (group) ->
-    log 'group', group
-    log 'connections', groupConnections.get group
+  #cellGroups.forEach (group) ->
+  #  log 'group', group
+  #  log 'connections', groupConnections.get group
   #grid.set 6, 2, 'nothing'
 
   ###
-  currentState = new Map
-  shuttles.forEach (s) ->
-    currentState.set s, shuttleStates.getInitialState(s)
-
   cellGroups.forEach (group) ->
     log 'region', regions.get group, currentState
   ###
@@ -1003,7 +1068,6 @@ module.exports = Jit = (rawGrid) ->
   ###
 
 
-  currentState = new Map
   dangerousShuttles = new Set # Shuttles which might move next tick
   shuttles.forEach (s) ->
     currentState.set s, shuttleStates.getInitialState(s)
@@ -1020,6 +1084,10 @@ module.exports = Jit = (rawGrid) ->
   zones: zones
   step: ->
     shuttles.flush()
+
+    currentStates.map.forEach (state, shuttle) ->
+      log 'active state', state
+      log 'force', stateForce.get state
     # 1. Calculate up/down force
     #   - Get all neighboring zones given current state
     #
@@ -1116,7 +1184,11 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
+  util.printGrid util.gridExtents(jit.grid), jit.grid
+
   jit.torture() if torture
+
+  jit.step() if !torture
   
 if require.main == module
   filename = process.argv[2]

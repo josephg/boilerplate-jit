@@ -53,7 +53,7 @@ exports.fill = (initialX, initialY, f) ->
 
 
 
-oppositeDir = (dir) -> (dir+2) % 4
+oppositeDir = exports.oppositeDir = (dir) -> (dir+2) % 4
 
 cellAt = (grid, x, y, dir) ->
   v = grid.get x, y
@@ -133,6 +133,10 @@ exports.uniqueShuttlesInStates = (states) ->
 
   shuttles
 
+exports.setToArray = (set) ->
+  arr = []
+  set.forEach (x) -> arr.push(x)
+  arr
 
 exports.ShuttleStateMap = class ShuttleStateMap
   constructor: (shuttleSet) ->
@@ -212,16 +216,41 @@ exports.fillGraph = (initialNode, f) ->
 
 exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, stream = process.stdout) ->
   top ||= 0; left ||= 0
-  for y in [top-1..bottom+1]
-    stream.write ''
-    for x in [left-1..right+1]
+
+  # Header
+  stream.write '  '
+  for x in [left..right]
+    stream.write "#{x%10}"
+  stream.write '\n'
+
+  for y in [top..bottom]
+    stream.write "#{y%10} "
+    for x in [left..right]
       v = getFn(x, y)
       stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
     stream.write '\n'
+
+  stream.write '  '
+  for x in [left..right]
+    stream.write "#{x%10}"
+  stream.write '\n'
 
 exports.printJSONGrid = (extents, grid, stream = process.stdout) ->
   printCustomGrid extents, ((x, y) -> grid[[x,y]]), stream
 
 exports.printGrid = (extents, grid, stream = process.stdout) ->
   printCustomGrid extents, ((x, y) -> grid.get x, y), stream
+
+exports.gridExtents = (grid) ->
+  # calculate the extents
+  top = left = bottom = right = null
+
+  grid.forEach (x, y, v) ->
+    left = x if left is null || x < left
+    right = x if right is null || x > right
+    top = y if top is null || y < top
+    bottom = y if bottom is null || y > bottom
+
+  {top, left, bottom, right}
+
 
