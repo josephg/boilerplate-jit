@@ -41,7 +41,10 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
 
   get: (k1, k2) ->
     inner = @levelOne.get k1
-    v = inner.get k2 if inner
+    return inner.get k2 if inner
+
+  getDef: (k1, k2) ->
+    v = @get k1, k2
     if !v? and @makeDefault
       @set k1, k2, v = @makeDefault k1, k2
     v

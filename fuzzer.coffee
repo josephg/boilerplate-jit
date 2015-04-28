@@ -36,7 +36,7 @@ grid = {}
 sim = new Simulator grid
 jit = new Jit grid
 
-SIZE = 5
+SIZE = 3
 EXTENTS = {right:SIZE-1, bottom:SIZE-1}
 
 printPressure = (pressureGrid) ->
@@ -53,14 +53,14 @@ printPressure = (pressureGrid) ->
 debugPrint = ->
   util.printGrid EXTENTS, jit.grid
 
-log.quiet = true
+#log.quiet = true
 fuzz = ->
   start = Date.now()
   for iter in [1..10000]
     #log.quiet = false if iter is 351
     #debugPrint()
     #jit.check()
-    for [1...5]
+    for [1...2]
       x = mersenne.rand() % SIZE
       y = mersenne.rand() % SIZE
       v = randomValue()
@@ -91,6 +91,9 @@ fuzz = ->
           delete simPressure[k]
           delete jitPressure[k]
       assert.deepEqual jitPressure, simPressure
+
+      #sim.step()
+      #jit.step()
 
     catch e
       log '****** CRASH ******'
