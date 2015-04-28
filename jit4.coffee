@@ -768,8 +768,6 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       regionsForGroup.get(group)?.delete region.states
     watch.signal region
 
-  getTrimmedStates = (shuttles, filledStates, shuttleStateMap) ->
-
   Region = (group0, trimmedStates, shuttleStateMap) ->
     log 'createRegion from group', group0._id#, shuttleStateMap
     assert regionsForGroup.getDef(group0).isDefinedFor shuttleStateMap
@@ -801,7 +799,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
       return if filled
 
       # Ok, we're looking good.
-      regionsForGroup.getDef(group).set shuttleStateMap, this
+      regionsForGroup.getDef(group).set trimmedStates, this
       @size++
       @groups.add group
       group.engines.forEach (e) => @engines.add e
@@ -818,14 +816,14 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
     # current set of shuttle states.
 
     # A map of just the states that are referenced by the group
-    trimmedStates = new Set
+    trimmedStates = new Map
 
     # Check to see if this group is filled in the specified states
     invalid = no
     filledStates = fillGrid.getFilledStates group.fillKey
     group.shuttles.forEach (s) ->
       state = shuttleStateMap.get s
-      trimmedStates.add state
+      trimmedStates.set s, state
       invalid = yes if filledStates.has state
 
     # We were asked to create a region for a group with shuttle states that
