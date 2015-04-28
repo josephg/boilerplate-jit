@@ -1,4 +1,4 @@
-exports.Jit = require './jit4'
+exports.Jit = require './jit'
 exports.util = require './util'
 
 collections = require './collections2'

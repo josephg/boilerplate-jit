@@ -1,7 +1,7 @@
 # This jit is designed as an ecosystem of signaling parts.
-Watcher = require './watch2'
+Watcher = require './watch'
 {Map2, Map3, Set2, Set3} = require './collections2'
-{parseXY, fill, DIRS} = util = require './util2'
+{parseXY, fill, DIRS} = util = require './util'
 log = require './log'
 assert = require 'assert'
 mersenne = require 'mersenne'

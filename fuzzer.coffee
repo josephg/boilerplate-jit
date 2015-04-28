@@ -2,9 +2,9 @@ mersenne = require 'mersenne'
 assert = require 'assert'
 Simulator = require 'boilerplate-sim'
 {parseXY} = Simulator
-Jit = require './jit4'
+Jit = require './jit'
 log = require './log'
-util = require './util2'
+util = require './util'
 
 mersenne.seed 3
 randomValue = do ->
