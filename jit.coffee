@@ -29,25 +29,36 @@ letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
 
 Grid = (rawGrid) ->
   grid = new Map2
-  watch = new Watcher (fn) ->
+
+  forEach = (fn) ->
     grid.forEach (x, y, v) ->
       fn x, y, null, v
+
+  # You usually want to use afterWatch to invalidate things. beforeWatch is
+  # important for collapsing shuttles.
+  beforeWatch = new Watcher forEach
+  afterWatch = new Watcher forEach
 
   for k, v of rawGrid when k not in ['tw', 'th']
     {x,y} = parseXY k
     grid.set x, y, v
 
-  watch: watch
+  beforeWatch: beforeWatch
+  afterWatch: afterWatch
   get: (x, y) -> grid.get x, y
   set: (x, y, v) ->
     v = undefined if v is null
     oldV = grid.get x, y
+    beforeWatch.signal x, y, oldV, v
+    # oldV might have changed as a result of signaling.
+    oldV = grid.get x, y
+
     if v != oldV
       if v
         grid.set x, y, v
       else
         grid.delete x, y
-      watch.signal x, y, oldV, v
+      afterWatch.signal x, y, oldV, v
       return yes
     else
       return no
@@ -61,7 +72,7 @@ GridBuffer = (match, grid) ->
 
   watch = new Watcher
 
-  grid.watch.forward (x, y, oldv, v) ->
+  grid.afterWatch.forward (x, y, oldv, v) ->
     if oldv in match
       watch.signal x, y if !buffer.has x, y # Reclaim the old value
 
@@ -104,13 +115,13 @@ BlobFiller = (type, grid) ->
   deleteWatch = new Watcher
 
   buffer.watch.on (x, y) ->
-    deleteBlobAt x, y
-
-  deleteBlobAt = (x, y) ->
     b = blobGrid.get x, y
+    deleteBlob b
+
+  deleteBlob = (b) ->
     return no unless blobs.delete b
 
-    log "Destroyed #{type} #{b.id} at", x, y, b
+    log "Destroyed #{type} #{b.id} at", b.points
     assert b.used
     b.used = no
     # Put the points we ate back in the buffer.
@@ -197,14 +208,23 @@ BlobFiller = (type, grid) ->
     s = blobGrid.get x, y
     return s if s?.used
 
-  collapse: (s, dx, dy) ->
-    assert type is 'shuttle'
+  delete: deleteBlob
 
-    # When any cells are edited along a shuttle's path, we should move the
-    # shuttle into its current position (its current state) in the grid. This
-    # will force the shuttle to be regenerated (along with its states, starting
-    # with the current state).
-    throw Error 'not implemented'
+  collapseShuttle: (shuttle, {dx, dy}) ->
+    # This will happen a lot, because we'll often try to collapse multiple
+    # states all in one flurry of destruction.
+    return if shuttle.numValidStates is 0
+
+    return unless deleteBlob shuttle
+
+    log 'collapsing shuttle', shuttle.id, dx, dy
+
+    shuttle.points.forEach (x, y, v) ->
+      grid.set x, y, 'nothing'
+
+    shuttle.points.forEach (x, y, v) ->
+      grid.set x+dx, y+dy, v
+
 
   check: (invasive) ->
     @forEach(->) if invasive
@@ -447,7 +467,7 @@ CellGroups = (grid, engines, fillGrid) ->
     group.edges.forEach (x, y, c) ->
       edgeGrid.get(x, y).delete group
 
-  grid.watch.forward (x, y, oldV, v) ->
+  grid.afterWatch.forward (x, y, oldV, v) ->
     cmax = util.cellMax oldV
     for c in [0...cmax]
       #log '---', x, y, c, oldV
@@ -1115,10 +1135,10 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
   # shuttles don't intersect.
   stateGrid = new Map2 -> new Set
   watch = new Watcher
-  collapseWatch = new Watcher
 
   # A queue of shuttles which will be collapsed at the end of step().
-  toCollapse = new Map
+  combineWatcher = new Watcher
+  toCombine = new Map
 
   # A map from state -> set of states (in other shuttles) that will cause the
   # shuttles to collide.
@@ -1156,32 +1176,14 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
           adjacentStates.getDef(state1).add state2
           adjacentStates.getDef(state2).add state1
 
-  collapse = (shuttle, state) ->
-    # This will happen a lot, because we'll often try to collapse multiple
-    # states all in one flurry of destruction.
-    return if shuttle.numValidStates is 0
 
-    state ?= currentStates.map.get shuttle
-    log 'collapsing shuttle', state
-    {dx, dy} = state
-
-    shuttle.points.forEach (sx, sy, sv) ->
-      grid.set sx, sy, 'nothing' #unless sx is x and sy is y
-
-    shuttle.points.forEach (sx, sy, sv) ->
-      sx += dx; sy += dy
-      grid.set sx, sy, sv #unless sx is x and sy is y
-
-    #shuttles.collapse shuttle, state.dx, state.dy
-
-    #log grid.toJSON()
-
-    collapseWatch.signal state
-
-  grid.watch.forward (x, y, oldV, v) ->
+  grid.beforeWatch.forward (x, y, oldV, v) ->
     stateGrid.get(x, y)?.forEach (state) ->
-      collapse state.shuttle
-    grid.set x, y, v
+      shuttle = state.shuttle
+      # We want to collapse it to its current position, not the state which
+      # collided.
+      state = currentStates.map.get shuttle
+      shuttles.collapseShuttle shuttle, state
 
   currentStates.immediateWatch.on (shuttle1, state1) ->
     if set = adjacentStates.get state1
@@ -1189,65 +1191,21 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
         shuttle2 = state2.shuttle
         if currentStates.getImmediate(shuttle2) is state2
           # Oof. collapse.
-          toCollapse.set shuttle1, state1
-          toCollapse.set shuttle2, state2
+          toCombine.set shuttle1, state1
+          toCombine.set shuttle2, state2
 
           #collapse shuttle1, state1
           #collapse shuttle2, state2
 
   stepWatch.on (time) ->
-    if time is 'after' and toCollapse.size
+    if time is 'after' and toCombine.size
       log 'time to do some collapsin'
-      toCollapse.forEach (state, shuttle) -> collapse shuttle, state
-      toCollapse.clear()
+      toCombine.forEach (state, shuttle) -> shuttles.collapseShuttle shuttle, state
+      toCombine.clear()
 
   watch: watch
-  collapseWatch: collapseWatch
-
-  willCollapse: (shuttle) -> toCollapse.has shuttle
-
-### # I'm holding off on writing this because its really just an optimization of group edges.
-
-RegionConnections = (cellGroups, regions) ->
-  # This calculates region calculations. Regions are connected if they touch
-  # and they are compatible - which is, its possible that if A is in a given
-  # zone, B will be in that zone as well.
-  #
-  # For each region, there's two sets of connections: down connections and up
-  # connections:
-  #  - Down connections are 'downstream' in the sense that if region A is in a
-  #    zone, downstream regions B and C will always be in that zone too.
-  #  - Up connections may or may not be active based on the current set of
-  #    states. The region just connects to another group.
-  #
-  # This module uses the same 'complete' mechanic as GroupConnections.
-  # Bijections are always added reflexively when they're found, but we only
-  # know we have all connections for a given region if we actually went
-  # looking.
-  downConnections = new Map # region -> set of connected regions
-  downConnections.default = -> new Set
-
-  upConnections = new Map # Region -> set of groups we need to check
-  upConnections.default = -> new Set
-
-  complete = new WeakSet # Regions we have the full set of connections for.
-
-  regions.watch.on (region) ->
-    if down = downConnections.get region
-      down.forEach (r2) ->
-        downConnections.get(r2).delete region
-        complete.delete r2
-
-      downConnections.delete region
-
-    if up = upConnections.get region
-      # This is a set of groups.
-      
-
-    complete.delete region # not really needed because its weak?
-###
-
-  
+  combineWatcher: combineWatcher
+  willCombine: (shuttle) -> toCombine.has shuttle
 
 
 module.exports = Jit = (rawGrid) ->
@@ -1280,7 +1238,7 @@ module.exports = Jit = (rawGrid) ->
       log 'dirty shuttle', shuttle
 
       # This is all a bit of a hack.
-      return if shuttleGrid.willCollapse shuttle
+      return if shuttleGrid.willCombine shuttle
        
       # Consider moving the shuttle.
       state = currentStates.map.get shuttle
@@ -1379,6 +1337,10 @@ module.exports = Jit = (rawGrid) ->
   groups: cellGroups
   shuttles: shuttles
   engines: engines
+  getShuttlePos: (shuttle) ->
+    state = currentStates.map.get shuttle
+    return {dx:state.dx, dy:state.dy}
+
 
 
 ###
