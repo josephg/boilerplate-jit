@@ -1,6 +1,6 @@
 # This jit is designed as an ecosystem of signaling parts.
 Watcher = require './watch'
-{Map2, Map3, Set2, Set3} = require './collections2'
+{Map2, Map3, Set2, Set3, SetOfPairs} = require './collections2'
 {parseXY, fill, DIRS} = util = require './util'
 log = require './log'
 assert = require 'assert'
@@ -298,8 +298,8 @@ ShuttleStates = (grid, shuttles) ->
       shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
     #log 'created new state', state
-    addWatch.signal state if valid
     log 'made shuttle state for shuttle', state.shuttle.id, state.dx, state.dy if valid
+    addWatch.signal state if valid
     return state
 
   flushStatesAt: (x, y) ->
@@ -696,7 +696,7 @@ StateForce = (shuttleStates, groups) ->
         else
           stateForGroup.getDef(group).add state
 
-    log '-> makeForce', force
+    #log '-> makeForce', force
     force
 
   get: (state) -> stateForce.getDef state
@@ -1133,17 +1133,17 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
   #
   # Its used to find & kill shuttles when the grid changes and also make sure
   # shuttles don't intersect.
-  stateGrid = new Map2 -> new Set
+  stateGrid = new Map2 -> new Set # This could probably be rewritten to use Set3.
   watch = new Watcher
 
   # A queue of shuttles which will be collapsed at the end of step().
   combineWatcher = new Watcher
   toCombine = new Map
 
-  # A map from state -> set of states (in other shuttles) that will cause the
-  # shuttles to collide.
-  adjacentStates = new Map
-  adjacentStates.default = -> new Set
+  # Pairs of states that will be touching
+  adjacentStates = new SetOfPairs
+  # Pairs of states which will be overlapping
+  overlappingStates = new SetOfPairs
 
   shuttleStates.addWatch.forward (state) ->
     state.shuttle.points.forEach (x, y, v) ->
@@ -1151,31 +1151,34 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
       stateGrid.getDef(x, y).add state
       watch.signal x, y
     addAdjacentStates state
+    addOverlappingStates state
 
   shuttleStates.deleteWatch.on (state) ->
-    log 'deleteWatch on state', state
+    #log 'deleteWatch on state', state
     state.shuttle.points.forEach (x, y, v) ->
       x += state.dx; y += state.dy
       stateGrid.get(x, y).delete state
       watch.signal x, y
 
-    adjacentStates.get(state)?.forEach (state2) ->
-      adjacentStates.get(state2).delete state
-    adjacentStates.delete state
+    adjacentStates.deleteAll state
+    overlappingStates.deleteAll state
 
   addAdjacentStates = (state1) ->
     state1.shuttle.edges.forEach (x, y, dir) ->
       {dx, dy} = DIRS[dir]
-      x += state1.dx + dx
-      y += state1.dy + dy
+      x += state1.dx + dx; y += state1.dy + dy
 
-      if set = stateGrid.get x, y
-        set.forEach (state2) ->
-          return if state2.shuttle is state1.shuttle
-          #log 'adjacent states found', state1, state2
-          adjacentStates.getDef(state1).add state2
-          adjacentStates.getDef(state2).add state1
+      stateGrid.get(x, y)?.forEach (state2) ->
+        return if state2.shuttle is state1.shuttle
+        #log 'adjacent states found', state1, state2
+        adjacentStates.add state1, state2
 
+  addOverlappingStates = (state1) ->
+    state1.shuttle.points.forEach (x, y) ->
+      stateGrid.get(x+state1.dx, y+state1.dy)?.forEach (state2) ->
+        return if state2.shuttle is state1.shuttle
+        #log 'overlapping states', state1, state2
+        overlappingStates.add state1, state2
 
   grid.beforeWatch.forward (x, y, oldV, v) ->
     stateGrid.get(x, y)?.forEach (state) ->
@@ -1186,16 +1189,15 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
       shuttles.collapseShuttle shuttle, state
 
   currentStates.immediateWatch.on (shuttle1, state1) ->
-    if set = adjacentStates.get state1
-      set.forEach (state2) ->
-        shuttle2 = state2.shuttle
-        if currentStates.getImmediate(shuttle2) is state2
-          # Oof. collapse.
-          toCombine.set shuttle1, state1
-          toCombine.set shuttle2, state2
+    adjacentStates.getAll(state1)?.forEach (state2) ->
+      shuttle2 = state2.shuttle
+      if currentStates.getImmediate(shuttle2) is state2
+        # Oof. collapse.
+        toCombine.set shuttle1, state1
+        toCombine.set shuttle2, state2
 
-          #collapse shuttle1, state1
-          #collapse shuttle2, state2
+        #collapse shuttle1, state1
+        #collapse shuttle2, state2
 
   stepWatch.on (time) ->
     if time is 'after' and toCombine.size
@@ -1206,6 +1208,14 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
   watch: watch
   combineWatcher: combineWatcher
   willCombine: (shuttle) -> toCombine.has shuttle
+
+  shuttleWillOverlap: (shuttle, state1) ->
+    # Can the named shuttle enter the specified state, or would it overlap?
+    overlap = no
+    overlappingStates.getAll(state1)?.forEach (state2) ->
+      overlap = yes if state2.shuttle != shuttle
+    return overlap
+
 
 
 module.exports = Jit = (rawGrid) ->
@@ -1235,10 +1245,10 @@ module.exports = Jit = (rawGrid) ->
     shuttles.flush()
 
     dirtyShuttles.forEach (shuttle) ->
-      log 'dirty shuttle', shuttle
+      log 'step() looking at shuttle', shuttle
 
       # This is all a bit of a hack.
-      return if shuttleGrid.willCombine shuttle
+      #return if shuttleGrid.willCombine shuttle
        
       # Consider moving the shuttle.
       state = currentStates.map.get shuttle
@@ -1250,6 +1260,7 @@ module.exports = Jit = (rawGrid) ->
       deps = new Set
 
       # Y first.
+      log 'shuttle force', force
       for d in ['y', 'x'] when (f = force[d])
         impulse = 0
 
@@ -1263,7 +1274,8 @@ module.exports = Jit = (rawGrid) ->
           deps.add zone
 
           impulse -= mult * zone.pressure
-          
+        
+        log 'd', d, 'impulse', impulse
         continue unless impulse
 
         dir = if impulse < 0
@@ -1275,13 +1287,17 @@ module.exports = Jit = (rawGrid) ->
         moved = no
         while impulse
           log 'impulse', impulse, 'dir', dir
+          # We can't move any further in this direction.
           break unless (next = shuttleStates.getStateNear state, dir)
+
+          # This shuttle is about to collide into another shuttle. ABORT!
+          break if shuttleGrid.shuttleWillOverlap shuttle, next
           state = next
           moved = yes
           impulse--
           
         if moved
-          log 'shuttle', shuttle.id, 'moved to', state
+          log 'shuttle', shuttle.id, 'moved to', state.dx, state.dy
           currentStates.set shuttle, state
           # The shuttle is still dirty - so we're kinda done here.
           return
@@ -1372,7 +1388,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.torture() if torture
 
   if !torture
-    for [1..3]
+    for [1..1]
       jit.step()
       jit.printGrid()
 
