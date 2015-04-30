@@ -929,14 +929,10 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   # where we don't want shuttles that move early in the tick to interact with
   # shuttles which move later on.
   endStepWatch = new Watcher
-  # Unfortunately, when shuttles touch they *do* have to interact.
-  # immediateWatch is used to detect things like that.
-  immediateWatch = new Watcher
 
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
     currentStates.set s, state
-    immediateWatch.signal s, state
     endStepWatch.signal s, state
 
   shuttles.deleteWatch.on (s) ->
@@ -957,9 +953,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
 
   set: (shuttle, state) ->
     patch.set shuttle, state
-    immediateWatch.signal shuttle, state
 
-  immediateWatch: immediateWatch
   getImmediate: (shuttle) ->
     patch.get(shuttle) || currentStates.get(shuttle)
 
@@ -1137,7 +1131,6 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
   watch = new Watcher
 
   # A queue of shuttles which will be collapsed at the end of step().
-  combineWatcher = new Watcher
   toCombine = new Map
 
   # Pairs of states that will be touching
@@ -1188,25 +1181,15 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
       state = currentStates.map.get shuttle
       shuttles.collapseShuttle shuttle, state
 
-  currentStates.immediateWatch.on (shuttle1, state1) ->
+  currentStates.watch.on (shuttle1, state1) ->
     adjacentStates.getAll(state1)?.forEach (state2) ->
       shuttle2 = state2.shuttle
       if currentStates.getImmediate(shuttle2) is state2
         # Oof. collapse.
-        toCombine.set shuttle1, state1
-        toCombine.set shuttle2, state2
-
-        #collapse shuttle1, state1
-        #collapse shuttle2, state2
-
-  stepWatch.on (time) ->
-    if time is 'after' and toCombine.size
-      log 'time to do some collapsin'
-      toCombine.forEach (state, shuttle) -> shuttles.collapseShuttle shuttle, state
-      toCombine.clear()
+        shuttles.collapseShuttle shuttle1, state1
+        shuttles.collapseShuttle shuttle2, state2
 
   watch: watch
-  combineWatcher: combineWatcher
   willCombine: (shuttle) -> toCombine.has shuttle
 
   shuttleWillOverlap: (shuttle, state1) ->
