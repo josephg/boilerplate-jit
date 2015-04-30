@@ -211,6 +211,7 @@ BlobFiller = (type, grid) ->
   delete: deleteBlob
 
   collapseShuttle: (shuttle, {dx, dy}) ->
+    assert shuttle.used
     # This will happen a lot, because we'll often try to collapse multiple
     # states all in one flurry of destruction.
     return if shuttle.numValidStates is 0
@@ -532,7 +533,7 @@ CellGroups = (grid, engines, fillGrid) ->
 
       group.useless = no if v and v not in ['positive', 'negative']
       if fillGrid.getFillKey(x, y) != key
-        #log "wrong fill key -> '#{fillGrid.getFillKey(x, y)}'"
+        log "wrong fill key -> '#{fillGrid.getFillKey(x, y)}'", x, y, c
         group.edges.add x, y, c
         edgeGrid.getDef(x, y).add group
         return
@@ -924,16 +925,12 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   # them all.
   patch = new Map
 
-  # Its a bit of a shame we need both of these. The endStepWatch is probably
-  # what you want - it is used to trigger deleting zones and regions and so on,
-  # where we don't want shuttles that move early in the tick to interact with
-  # shuttles which move later on.
-  endStepWatch = new Watcher
+  watch = new Watcher
 
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
     currentStates.set s, state
-    endStepWatch.signal s, state
+    watch.signal s, state
 
   shuttles.deleteWatch.on (s) ->
     currentStates.delete s
@@ -945,11 +942,11 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
       # Call this at the end of step()
       patch.forEach (state, shuttle) ->
         currentStates.set shuttle, state
-        endStepWatch.signal shuttle, state
+        watch.signal shuttle, state
       patch.clear()
  
   map: currentStates
-  watch: endStepWatch
+  watch: watch
 
   set: (shuttle, state) ->
     patch.set shuttle, state
@@ -969,8 +966,6 @@ Zones = (regions, currentStates) ->
   # For garbage collection
   zonesDependingOnShuttle = new WeakMap # shuttle -> set of zones
   zonesDependingOnShuttle.default = -> new Set
-
-  currentStates.watch
 
   watch = new Watcher
 
@@ -1187,16 +1182,18 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
       if currentStates.getImmediate(shuttle2) is state2
         # Oof. collapse.
         shuttles.collapseShuttle shuttle1, state1
-        shuttles.collapseShuttle shuttle2, state2
+        shuttles.collapseShuttle shuttle2, state2# if shuttle2.used
 
   watch: watch
   willCombine: (shuttle) -> toCombine.has shuttle
 
-  shuttleWillOverlap: (shuttle, state1) ->
-    # Can the named shuttle enter the specified state, or would it overlap?
+  shuttleWillOverlap: (shuttle1, state1) ->
+    # Would the named shuttle overlap with something if it enters the named state?
     overlap = no
     overlappingStates.getAll(state1)?.forEach (state2) ->
-      overlap = yes if state2.shuttle != shuttle
+      shuttle2 = state2.shuttle
+      overlap = yes if currentStates.getImmediate(shuttle2) is state2
+    log 'overlap', overlap, shuttle1.id
     return overlap
 
 
@@ -1248,7 +1245,7 @@ module.exports = Jit = (rawGrid) ->
         impulse = 0
 
         f.forEach (mult, group) ->
-          log 'f.forEach', group
+          log 'calculating pressure in group', group
           assert group.used
           zone = zones.getZoneForGroup group
           #return if zone is null # Zone is null if the group is filled.
@@ -1371,7 +1368,7 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.torture() if torture
 
   if !torture
-    for [1..1]
+    for [1..3]
       jit.step()
       jit.printGrid()
 
