@@ -31,7 +31,7 @@ Set::map = (fn) ->
 
 exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
   constructor: (data) ->
-    @levelOne = new Map
+    @map = new Map
     @size = 0
     if typeof data is 'function'
       @makeDefault = data
@@ -40,7 +40,7 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
         @set k1, k2, v
 
   get: (k1, k2) ->
-    inner = @levelOne.get k1
+    inner = @map.get k1
     return inner.get k2 if inner
 
   getDef: (k1, k2) ->
@@ -50,14 +50,14 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
     v
 
   has: (k1, k2) ->
-    inner = @levelOne.get k1
+    inner = @map.get k1
     return inner?.has(k2) or false
 
   set: (k1, k2, v) ->
-    inner = @levelOne.get k1
+    inner = @map.get k1
     if !inner
       inner = new Map
-      @levelOne.set k1, inner
+      @map.set k1, inner
 
     @size -= inner.size
     inner.set k2, v
@@ -65,7 +65,7 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
     return this
 
   delete: (k1, k2) ->
-    inner = @levelOne.get k1
+    inner = @map.get k1
     if inner
       deleted = inner.delete k2
       @size-- if deleted
@@ -74,11 +74,11 @@ exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
       return no
 
   forEach: (fn) ->
-    @levelOne.forEach (inner, k1) ->
+    @map.forEach (inner, k1) ->
       inner.forEach (v, k2) ->
         fn k1, k2, v
 
-  clear: -> @levelOne.clear()
+  clear: -> @map.clear()
 
   inspect: (depth, options) ->
     return '[Map2]' if depth < 0
@@ -160,23 +160,23 @@ exports.Map3 = class Map3 # A map from (a,b) -> c instead of just a->c
 
 exports.Set2 = class Set2 # A set of (a,b) values
   constructor: (data) ->
-    @levelOne = new Map
+    @map = new Map
     @size = 0
     if data
       for [v1, v2] in data
         @add v1, v2
 
-  subset: (v1) -> @levelOne.get v1
+  subset: (v1) -> @map.get v1
 
   has: (v1, v2) ->
-    inner = @levelOne.get v1
+    inner = @map.get v1
     return inner?.has(v2) or false
 
   add: (v1, v2) ->
-    inner = @levelOne.get v1
+    inner = @map.get v1
     if !inner
       inner = new Set
-      @levelOne.set v1, inner
+      @map.set v1, inner
 
     @size -= inner.size
     inner.add v2
@@ -184,20 +184,23 @@ exports.Set2 = class Set2 # A set of (a,b) values
     return this
 
   delete: (v1, v2) ->
-    inner = @levelOne.get v1
-    if inner
-      deleted = inner.delete v2
-      @size-- if deleted
-      return deleted
-    else
-      return no
+    inner = @map.get v1
+    return no if !inner
+
+    deleted = inner.delete v2
+    return no if !deleted
+
+    @size--
+    if inner.size is 0
+      @map.delete v1
+    return yes
 
   forEach: (fn) ->
-    @levelOne.forEach (inner, v1) ->
+    @map.forEach (inner, v1) ->
       inner.forEach (v2) ->
         fn v1, v2
 
-  clear: -> @levelOne.clear()
+  clear: -> @map.clear()
 
   inspect: (depth, options) ->
     return '[Set2]' if depth < 0
@@ -264,4 +267,31 @@ exports.Set3 = class Set3
       entries.push "(#{inspect v1, options},#{inspect v2, options},#{inspect v3, options})"
     assert entries.length == @size
     "{[Set3] #{entries.join ', '} }"
+
+exports.SetOfPairs = class SetOfPairs extends Set2
+  # This stores unordered sets of pairs (a,b) where for any a you can access all values b.
+  # If you care about the order of (a,b), use Set2.
+
+  # We don't need a constructor.
+  add: (a, b) ->
+    super a, b
+    super b, a
+
+  delete: (a, b) ->
+    if super a, b
+      super b, a
+      yes
+    else
+      no
+
+  getAll: (a) -> @map.get a
+
+  deleteAll: (a) ->
+    if set = @map.get a
+      set.forEach (b) =>
+        @map.get(b).delete a
+      @map.delete a
+      yes
+    else
+      no
 
