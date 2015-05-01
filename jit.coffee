@@ -1236,7 +1236,7 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 
-collapseWhenBaseChanged = (grid, shuttleGrid) ->
+collapseWhenBaseChanged = (grid, shuttles, shuttleGrid) ->
   grid.beforeWatch.forward (x, y, oldV, v) ->
     shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
       shuttle = state.shuttle
@@ -1280,7 +1280,7 @@ module.exports = Jit = (rawGrid) ->
   #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
-  collapseWhenBaseChanged grid, shuttleGrid
+  collapseWhenBaseChanged grid, shuttles, shuttleGrid
 
 
   set = (x, y, v) ->
@@ -1289,6 +1289,7 @@ module.exports = Jit = (rawGrid) ->
       shuttleBuffer.set x, y, v
     else
       grid.set x, y, v
+      shuttleBuffer.set x, y, null
 
   for k, v of rawGrid when k not in ['tw', 'th']
     {x,y} = parseXY k
@@ -1370,7 +1371,7 @@ module.exports = Jit = (rawGrid) ->
     # zones for the next step() call.
     stepWatch.signal 'after'
 
-    @printGrid()
+    #@printGrid()
     @check()
 
   check: (invasive) ->
@@ -1412,16 +1413,11 @@ module.exports = Jit = (rawGrid) ->
         overlay.set x+dx, y+dy, v
 
     util.printCustomGrid util.gridExtents(grid), (x, y) ->
-      if v = overlay.get x, y
-        return v
-      else
-        v = grid.get x, y
-        if v in ['shuttle', 'thinshuttle'] then 'nothing' else v
+      overlay.get(x, y) or grid.get x, y
 
   toJSON: ->
     json = {}
     grid.forEach (x, y, v) ->
-      v = 'nothing' if v in ['shuttle', 'thinshuttle']
       json["#{x},#{y}"] = v if v?
     shuttles.forEach (s) ->
       {dx, dy} = state = s.currentState
@@ -1434,10 +1430,6 @@ module.exports = Jit = (rawGrid) ->
   groups: groups
   shuttles: shuttles
   engines: engines
-  getShuttlePos: (shuttle) ->
-    state = shuttle.currentState
-    return {dx:state.dx, dy:state.dy}
-
 
 
 ###
