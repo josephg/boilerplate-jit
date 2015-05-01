@@ -195,6 +195,14 @@ exports.Set2 = class Set2 # A set of (a,b) values
       @map.delete v1
     return yes
 
+  deleteAll: (v1) ->
+    if (set = inner.get v1)
+      @size -= set.size
+      inner.delete v1
+      return yes
+
+    return no
+
   forEach: (fn) ->
     @map.forEach (inner, v1) ->
       inner.forEach (v2) ->
@@ -208,9 +216,13 @@ exports.Set2 = class Set2 # A set of (a,b) values
     @forEach (v1, v2) ->
       entries.push "(#{inspect v1, options},#{inspect v2, options})"
 
-    assert entries.length == @size
+    assert.equal entries.length, @size
     "{[Set2] #{entries.join ', '} }"
 
+  check: ->
+    size = 0
+    @forEach (x) -> size++
+    assert.equal @size, size
 
 exports.Set3 = class Set3
   constructor: (data) ->
@@ -290,7 +302,9 @@ exports.SetOfPairs = class SetOfPairs extends Set2
     if set = @map.get a
       set.forEach (b) =>
         @map.get(b).delete a
+
       @map.delete a
+      @size -= set.size * 2 # Both a->b and b->a relationships
       yes
     else
       no
