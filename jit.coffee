@@ -27,7 +27,12 @@ randomWeighted = (arr) ->
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
 
 
-Grid = (rawGrid) ->
+BaseGrid = ->
+  # This stores the base layer of cells for the world - which is to say,
+  # whatever is underneath shuttles.
+  #
+  # Shuttles aren't stored here (it doesn't make sense to store them in a grid
+  # because they're moving dawg). For that, we have ShuttleBuffer (below).
   grid = new Map2
 
   forEach = (fn) ->
@@ -39,15 +44,12 @@ Grid = (rawGrid) ->
   beforeWatch = new Watcher forEach
   afterWatch = new Watcher forEach
 
-  for k, v of rawGrid when k not in ['tw', 'th']
-    {x,y} = parseXY k
-    grid.set x, y, v
-
   beforeWatch: beforeWatch
   afterWatch: afterWatch
-  get: (x, y) -> grid.get x, y
+  get: grid.get.bind grid
   set: (x, y, v) ->
     v = undefined if v is null
+    assert v not in ['shuttle', 'thinshuttle']
     oldV = grid.get x, y
     beforeWatch.signal x, y, oldV, v
     # oldV might have changed as a result of signaling.
@@ -62,24 +64,31 @@ Grid = (rawGrid) ->
       return yes
     else
       return no
-  forEach: (fn) -> grid.forEach fn
+  forEach: grid.forEach.bind grid
 
+pump = (grid) -> (x, y) ->
+  v = grid.get x, y
+  grid.delete x, y if v
+  return v
 
-GridBuffer = (match, grid) ->
-  # A set of all the cells which are shuttle / thinshuttle and haven't been
-  # processed.
+EngineBuffer = (grid) ->
+  # EngineBuffer wraps a Map2 grid to use as a buffer between cells in the grid
+  # and engines.
+  #
+  # When cells are turned into engines, they get deleted from the grid. Then
+  # they get added back when the shuttle / engine is deleted.
   buffer = new Map2
 
   watch = new Watcher
 
   grid.afterWatch.forward (x, y, oldv, v) ->
-    if oldv in match
+    if oldv in ['positive', 'negative']
       watch.signal x, y if !buffer.has x, y # Reclaim the old value
 
       # Then get rid of it.
       buffer.delete x, y
 
-    if v in match
+    if v in ['positive', 'negative']
       # Reap adjacent cells. This might be special for shuttles?
       watch.signal x+dx, y+dy for {dx, dy} in DIRS
       buffer.set x, y, v
@@ -90,43 +99,61 @@ GridBuffer = (match, grid) ->
 
   watch: watch
   data: buffer
-  pump: (x, y) ->
-    v = buffer.get x, y
-    if v
+  pump: pump buffer
+
+ShuttleBuffer = ->
+  # The shuttle buffer is like EngineBuffer, but when shuttles need to go back
+  # in here is harder to figure out - we need semantic information about where
+  # the shuttle is to both know when to delete it, and know where to put it. So
+  # that happens somewhere else.
+  buffer = new Map2
+  watch = new Watcher
+
+  set: (x, y, v) ->
+    if v?
+      assert v in ['shuttle', 'thinshuttle']
+      return if buffer.get(x, y) is v
+      watch.signal x, y, v
+      buffer.set x, y, v
+    else
+      # Signal anyway. Not having the cell in the buffer doesn't tell us
+      # anything.
+      watch.signal x, y, v
       buffer.delete x, y
-    return v
+
+  watch: watch
+  data: buffer
+  pump: pump buffer
 
 # The code for finding & flood filling shuttles & engines is basically
 # identical. I'll reuse it, and switch according to which type of thing I'm
 # looking for.
-BlobFiller = (type, grid) ->
+BlobFiller = (type, buffer, grid) ->
   throw Error 'Invalid type' unless type in ['shuttle', 'engine']
-
-  match = {
-    shuttle: ['shuttle', 'thinshuttle']
-    engine: ['positive', 'negative']
-  }[type]
-
-  buffer = GridBuffer match, grid
 
   blobs = new Set
   blobGrid = new Map2 # x,y -> shuttle.
   addWatch = new Watcher (fn) -> blobs.forEach fn
   deleteWatch = new Watcher
 
-  buffer.watch.on (x, y) ->
-    b = blobGrid.get x, y
-    deleteBlob b
+  if type is 'engine'
+    # Shuttles get destroyed using ShuttleGrid
+    buffer.watch.on (x, y) ->
+      b = blobGrid.get x, y
+      deleteBlob b, 0, 0
 
-  deleteBlob = (b) ->
+  deleteBlob = (b, dx, dy) ->
     return no unless blobs.delete b
+
+    #console.trace "deleteBlob #{dx},#{dy}"
 
     log "Destroyed #{type} #{b.id} at", b.points
     assert b.used
     b.used = no
     # Put the points we ate back in the buffer.
     b.points.forEach (x2, y2, v) ->
-      buffer.data.set x2, y2, v
+      # Bypassing ShuttleBuffer's watch function. Is this correct..?
+      buffer.data.set x2+dx, y2+dy, v
 
     deleteWatch.signal b
     return yes
@@ -134,7 +161,7 @@ BlobFiller = (type, grid) ->
   Blob = (x, y, v0) ->
     #log 'makeBlob at', x, y
     #v0 = buffer.peek x, y
-    assert buffer.data.get(x, y) in match
+    #assert buffer.data.get(x, y) in match
 
     @id = makeId()
     @used = yes
@@ -143,18 +170,20 @@ BlobFiller = (type, grid) ->
     # Edges around the entire shuttle
     @edges = new Set3
     # Edges around v=shuttle tiles
-    @pushEdges = new Set3 if type is 'shuttle'
-
-    @numValidStates = 0 if type is 'shuttle'
+    if type is 'shuttle'
+      @pushEdges = new Set3
+      @numValidStates = 0
+      @currentState = null
+      @eachCurrentPoint = (fn) ->
+        dx = if @currentState then @currentState.dx else 0
+        dy = if @currentState then @currentState.dy else 0
+        @points.forEach (x, y, v) -> fn x+dx, y+dy, v
 
     blobs.add this
 
     # To collect the shuttle's edge, we'll flood fill passing in a third
     # parameter - which is the direction we approached a cell from.
     util.fill3 x, y, 0, (x, y, dir, hmm) =>
-      # ... So we'll hit cells up to 4 times.
-      return if @points.has x, y
-
       v = buffer.data.get x, y
 
       if !v or (type is 'engine' and v != v0)
@@ -164,7 +193,8 @@ BlobFiller = (type, grid) ->
         return
 
       if v is 'shuttle' then for {dx, dy},d in DIRS
-        v2 = grid.get x+dx, y+dy
+        x2 = x+dx; y2 = y+dy
+        v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
         if v2 != 'shuttle'
           @pushEdges.add x, y, d
 
@@ -209,23 +239,6 @@ BlobFiller = (type, grid) ->
     return s if s?.used
 
   delete: deleteBlob
-
-  collapseShuttle: (shuttle, {dx, dy}) ->
-    assert shuttle.used
-    # This will happen a lot, because we'll often try to collapse multiple
-    # states all in one flurry of destruction.
-    return if shuttle.numValidStates is 0
-
-    return unless deleteBlob shuttle
-
-    log 'collapsing shuttle', shuttle.id, dx, dy
-
-    shuttle.points.forEach (x, y, v) ->
-      grid.set x, y, 'nothing'
-
-    shuttle.points.forEach (x, y, v) ->
-      grid.set x+dx, y+dy, v
-
 
   check: (invasive) ->
     @forEach(->) if invasive
@@ -272,7 +285,7 @@ ShuttleStates = (grid, shuttles) ->
     if states
       shuttleStates.delete shuttle
       states.forEach (x, y, state) ->
-        deleteWatch.signal state if state.valid
+        deleteWatch.signal state
 
   canShuttleFitAt = (shuttle, dx, dy) ->
     fits = yes
@@ -299,8 +312,8 @@ ShuttleStates = (grid, shuttles) ->
       shuttleStates.set shuttle, new Map2 [[dx, dy, state]]
 
     #log 'created new state', state
-    log 'made shuttle state for shuttle', state.shuttle.id, state.dx, state.dy if valid
-    addWatch.signal state if valid
+    log 'made shuttle state for shuttle', state.id, state.shuttle.id, state.dx, state.dy if valid
+    addWatch.signal state
     return state
 
   flushStatesAt: (x, y) ->
@@ -333,14 +346,62 @@ ShuttleStates = (grid, shuttles) ->
     return successor if successor.valid
 
 
-FillGrid = (shuttleStates) ->
-  # Set of states which fill a given grid cell
+ShuttleGrid = (shuttleStates) ->
+  # This stores a couple data structures describing how the shuttles interact
+  # with the grid.
+  #
+  # This is updated eagerly when shuttle states are created.
+ 
+  # Set of states which fill a given grid cell (which is to say, block pressure)
+  #
+  # This is used for figuring out cell groups.
   fillGrid = new Map2 -> new Set # Map from (x,y) -> set of states
-  pointWatch = new Watcher
+  fillWatch = new Watcher
 
-  # Note: It might be worth splitting this module up into two - one for the
-  # fill grid and another for the keys.
+  # Set of states which fill a grid cell (including invalid states).
+  # Its different from fillGrid in two ways:
+  #  1. It includes any shuttle which occupies a grid cell using thinshuttle
+  #  2. It includes invalid states
+  #
+  # Its used to find & kill shuttles when the grid changes and also make sure
+  # shuttles don't intersect.
+  stateGrid = new Map2 -> new Set
+  stateWatch = new Watcher
 
+  shuttleStates.addWatch.forward (state) ->
+    #log 'shuttleStates signal', state, created
+    # Populate the fill list
+    state.shuttle.points.forEach (x, y, v) ->
+      x += state.dx; y += state.dy
+
+      stateGrid.getDef(x, y).add state
+      stateWatch.signal x, y
+
+      if v is 'shuttle' and state.valid
+        #log "adding #{state.id} to #{x}, #{y}"
+        fillGrid.getDef(x, y).add state
+        fillWatch.signal x, y
+
+  shuttleStates.deleteWatch.on (state) ->
+    log 'shuttle grid removing', state.shuttle.id, state.dx, state.dy
+    state.shuttle.points.forEach (x, y, v) ->
+      x += state.dx; y += state.dy
+
+      stateGrid.get(x, y).delete state
+      stateWatch.signal x, y
+
+      if v is 'shuttle' and state.valid
+        fillGrid.get(x, y).delete state
+        fillWatch.signal x, y
+
+  fillGrid: fillGrid
+  fillWatch: fillWatch
+  stateGrid: stateGrid
+  stateWatch: stateWatch
+
+  check: ->
+
+FillKeys = (shuttleStates, shuttleGrid) ->
   # The fill key is used for cell groups. Every adjacent grid cell with the
   # same fill key will always have the same pressure value regardless of
   # shuttle state. For now, the key is just a (stable) list of the states in
@@ -355,33 +416,21 @@ FillGrid = (shuttleStates) ->
   keysReferencingState = new WeakMap
   keysReferencingState.default = -> new Set
 
-  keyWatch = new Watcher
+  watch = new Watcher
 
-  shuttleStates.addWatch.forward (state) ->
-    #log 'shuttleStates signal', state, created
-    # Populate the fill list
-    state.shuttle.points.forEach (x, y, v) ->
-      if v is 'shuttle' and state.valid
-        #log "adding #{state.id} to #{x}, #{y}"
-        x += state.dx; y += state.dy
-        fillGrid.getDef(x, y).add state
-        fillKey.delete x, y
-        pointWatch.signal x, y
+  shuttleGrid.fillWatch.on (x, y) ->
+    fillKey.delete x, y
 
   shuttleStates.deleteWatch.on (state) ->
-    state.shuttle.points.forEach (x, y, v) ->
-      if v is 'shuttle' and state.valid
-        x += state.dx; y += state.dy
-        fillGrid.get(x, y).delete state
-        fillKey.delete x, y
-        pointWatch.signal x, y
+    # We don't need to update fillKey because the fillWatch above will take
+    # care of it.
     keysReferencingState.get(state)?.forEach (key) ->
       fillStates.delete key
-      keyWatch.signal key
+      watch.signal key
 
   calcKeyAt = (x, y) ->
     stateList = []
-    fillGrid.getDef(x, y).forEach (state) -> stateList.push state
+    shuttleGrid.fillGrid.get(x, y)?.forEach (state) -> stateList.push state
     stateList.sort (s1, s2) ->
       if s1.shuttle != s2.shuttle
         s1.shuttle.id - s2.shuttle.id
@@ -403,9 +452,8 @@ FillGrid = (shuttleStates) ->
 
     return key
 
+  watch: watch
   getFilledStates: (key) -> fillStates.get key
-  pointWatch: pointWatch
-  keyWatch: keyWatch
   getFillKey: (x, y) ->
     shuttleStates.flushStatesAt x, y
     key = fillKey.get x, y
@@ -415,7 +463,8 @@ FillGrid = (shuttleStates) ->
     return key
 
 
-CellGroups = (grid, engines, fillGrid) ->
+
+Groups = (grid, engines, shuttleGrid, fillKeys) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
   # contain the same regions.
@@ -493,11 +542,10 @@ CellGroups = (grid, engines, fillGrid) ->
       set.forEach (g) -> deleteGroup g
       groupsWithEngine.delete e
 
-  fillGrid.pointWatch.on (x, y) ->
-    # Patch of death. Groups will stop spreading based on adjacent fill keys.
+  shuttleGrid.fillWatch.on (x, y) ->
     deleteGroupsAt x, y
+    # Groups will stop spreading based on adjacent fill keys.
     edgeGrid.get(x, y)?.forEach (g) -> deleteGroup g
-    #deleteGroupsAt x+dx, y+dy for {dx, dy} in DIRS
 
   makeGroupAt = (x, y, c) ->
     v0 = grid.get x, y
@@ -507,15 +555,15 @@ CellGroups = (grid, engines, fillGrid) ->
     assert c < util.cellMax v0
     assert pendingCells.has x, y, c
 
-    key = fillGrid.getFillKey x, y
-    filledStates = fillGrid.getFilledStates key
+    key = fillKeys.getFillKey x, y
+    filledStates = fillKeys.getFilledStates key
     shuttles = util.uniqueShuttlesInStates filledStates
 
     group =
       _id: makeId()
       used: yes
       size: 0 # For debugging
-      fillKey: key # We could just request this out of fillGrid, but its handy.
+      fillKey: key # We could just request this out of fillKeys, but its handy.
       points: new Map3
       edges: new Set3 # x, y, c
       shuttles: shuttles
@@ -532,8 +580,8 @@ CellGroups = (grid, engines, fillGrid) ->
       return unless v # Optimization.
 
       group.useless = no if v and v not in ['positive', 'negative']
-      if fillGrid.getFillKey(x, y) != key
-        log "wrong fill key -> '#{fillGrid.getFillKey(x, y)}'", x, y, c
+      if fillKeys.getFillKey(x, y) != key
+        #log "wrong fill key -> '#{fillKeys.getFillKey(x, y)}'", x, y, c
         group.edges.add x, y, c
         edgeGrid.getDef(x, y).add group
         return
@@ -685,6 +733,10 @@ StateForce = (shuttleStates, groups) ->
         f = if dir is UP then -1 else 1
 
       {dx, dy} = DIRS[dir]
+
+      log 'edge', x, y
+      log 'looking in', x+dx, y+dy
+
       group = groups.getDir x+dx, y+dy, util.oppositeDir dir
       return unless group
 
@@ -703,72 +755,59 @@ StateForce = (shuttleStates, groups) ->
   get: (state) -> stateForce.getDef state
 
 
-GroupConnections = (cellGroups) ->
+GroupConnections = (groups) ->
   # So, here we track & report on connections between groups. Groups are either
   # complete or incomplete. Incomplete groups need to be regenerated if
   # requested, but they are useful for garbage collection.
 
-  connections = new Map # Map from group -> set of groups it touches
+  connections = new SetOfPairs # Map from group -> set of groups it touches
+  complete = new WeakSet # Set of groups which we have all the connections of
 
-  cellGroups.watch.on (group) ->
-    if (gc = connections.get group)
-      #log 'deleting'
-      connections.delete group
-      # Also any groups we've cached which connect to the deleted group will
-      # need to be regenerated.
+  groups.watch.on (group) ->
+    #log 'deleting'
+  
+    # Any groups we've cached which connect to the deleted group will
+    # need to be regenerated.
+    if (gc = connections.getAll group)
       gc.forEach (g2) ->
-        set2 = connections.get g2
-        if set2
-          set2.complete = false
-          set2.delete group
+        complete.delete g2
+
+    connections.deleteAll group
 
   findConnections = (group) ->
-    gc = new Set
-    gc.complete = true
+    assert group.used
     group.edges.forEach (x, y, c) ->
-      g2 = cellGroups.get x, y, c
-      #log 'g2', g2
-      assert g2
+      g2 = groups.get x, y, c
       assert g2.used
-      gc.add g2
+      connections.add group, g2
 
-      # And add a connection back. This is for garbage collection - if g2 gets
-      # deleted then get(group) is called, we need to regenerate the
-      # connections for group.
-      set2 = connections.get g2
-      if !set2
-        set2 = new Set
-        set2.complete = false
-        connections.set g2, set2
-      set2.add group
-
-    connections.set group, gc
-    gc
+    complete.add group
 
   get: (group) ->
-    gc = connections.get group
-    if !gc or !gc.complete
-      gc = findConnections group
-    return gc
+    if !complete.has group
+      findConnections group
+    return connections.getAll group
 
   check: (invasive) ->
     if invasive
-      cellGroups.forEach (g) =>
+      groups.forEach (g) =>
         set = @get g
         assert set
 
-    connections.forEach (set, group) ->
-      assert set.complete if invasive
-      return unless set.complete
-      log 'gggg', group
-      assert group.used
-      set.forEach (g2) ->
-        assert g2.used
+    connections.forEach (group1, group2) ->
+      if invasive
+        assert complete.has group1
+        assert complete.has group2
 
-        found = no
-        group.edges.forEach (x, y, c) ->
-          found = yes if g2.points.has x, y, c
-        assert found
+      return unless complete.has group1
+      #log 'gggg', group1
+      assert group1.used
+      assert group2.used
+
+      found = no
+      group1.edges.forEach (x, y, c) ->
+        found = yes if group2.points.has x, y, c
+      assert found
 
   checkEmpty: ->
     assert.equal 0, connections.size
@@ -777,12 +816,12 @@ GroupConnections = (cellGroups) ->
 #StateEdge = (shuttleStates) ->
   # The edge of a shuttle is a set of grid cells (x, y, cell) which may
 
-Regions = (fillGrid, cellGroups, groupConnections) ->
+Regions = (fillKeys, groups, groupConnections) ->
   # The region grid is lovely. This maps from:
   # group -> set of shuttle states -> region
   regionsForGroup = new Map
   regionsForGroup.default = (g) -> new util.ShuttleStateMap g.shuttles
-    #shuttles = util.uniqueShuttlesInStates(fillGrid.getFilledStates g.fillKey)
+    #shuttles = util.uniqueShuttlesInStates(fillKeys.getFilledStates g.fillKey)
 
   # This is needed for cleanup. Regions are destroyed when an adjacent group is
   # destroyed so if the group should now connect, we can take that into account.
@@ -793,7 +832,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
   watch = new Watcher
 
-  cellGroups.watch.on (group) ->
+  groups.watch.on (group) ->
     map = regionsForGroup.get group
     return unless map
     regionsForGroup.delete group
@@ -843,7 +882,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
         return
 
       # 3. The other group is filled in one of my states
-      filledStates = fillGrid.getFilledStates group.fillKey
+      filledStates = fillKeys.getFilledStates group.fillKey
       filled = no
       trimmedStates.forEach (state) ->
         filled = yes if filledStates.has state
@@ -871,7 +910,7 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
     # Check to see if this group is filled in the specified states
     invalid = no
-    filledStates = fillGrid.getFilledStates group.fillKey
+    filledStates = fillKeys.getFilledStates group.fillKey
     group.shuttles.forEach (s) ->
       state = shuttleStateMap.get s
       trimmedStates.set s, state
@@ -893,6 +932,8 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
   watch: watch
   
   get: (group, shuttleStateMap) ->
+    # The existance of this function taking in shuttleStateMap is the only
+    # reason we maintain the state map. ... .... :/
     map = regionsForGroup.getDef group
     region = map.get shuttleStateMap
     region = makeRegion group, shuttleStateMap if region is undefined
@@ -916,7 +957,10 @@ Regions = (fillGrid, cellGroups, groupConnections) ->
 
 
 CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
-  # This stores & propogates the shuttle states.
+  # This stores & propogates the shuttle's current states.
+  # Current state is now stored on the shuttle (shuttle.currentState)
+  # ... but we're also storing it here so we can index using the map in
+  # regions. I'm not sure if thats actually a good idea.
   currentStates = new Map # shuttle -> state.
 
   # ... So, we don't want to tell everyone the current states have changed as
@@ -929,18 +973,21 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
 
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
+    s.currentState = state
     currentStates.set s, state
     watch.signal s, state
 
   shuttles.deleteWatch.on (s) ->
-    currentStates.delete s
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
     patch.delete s
+    # If you care about the current state going away, watch shuttles.deleteWatch.
 
   stepWatch.on (time) ->
     if time is 'after'
       # Call this at the end of step()
       patch.forEach (state, shuttle) ->
+        log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
+        shuttle.currentState = state
         currentStates.set shuttle, state
         watch.signal shuttle, state
       patch.clear()
@@ -952,10 +999,10 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
     patch.set shuttle, state
 
   getImmediate: (shuttle) ->
-    patch.get(shuttle) || currentStates.get(shuttle)
+    patch.get(shuttle) || shuttle.currentState
 
 
-Zones = (regions, currentStates) ->
+Zones = (shuttles, regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
   # shuttle states.  These are constantly destroyed & regenerated as shuttles
   # move around.
@@ -972,9 +1019,12 @@ Zones = (regions, currentStates) ->
   regions.watch.on (r) ->
     deleteZone zoneForRegion.get r
 
-  currentStates.watch.on (shuttle, state) ->
+  deleteZonesWithShuttle = (shuttle) ->
     zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
       deleteZone zone
+
+  shuttles.deleteWatch.on deleteZonesWithShuttle
+  currentStates.watch.on deleteZonesWithShuttle
 
   deleteZone = (z) ->
     return unless z?.used
@@ -1111,83 +1161,69 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
 
   forEach: (fn) -> dirty.forEach fn
 
-
-ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
-  # This maps x,y -> a set of shuttles which sometimes occupy this region
-  # (including in invalid states)
-  # Its different from fillGrid in three ways:
-  #  1. It maps to the shuttle, not the shuttle state
-  #  2. It includes any shuttle which occupies a grid cell using thinshuttle
-  #  3. It includes invalid states
-  #
-  # Its used to find & kill shuttles when the grid changes and also make sure
-  # shuttles don't intersect.
-  stateGrid = new Map2 -> new Set # This could probably be rewritten to use Set3.
-  watch = new Watcher
-
-  # A queue of shuttles which will be collapsed at the end of step().
-  toCombine = new Map
-
-  # Pairs of states that will be touching
+ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
+  # Pairs of states in different shuttles that will be touching
   adjacentStates = new SetOfPairs
-  # Pairs of states which will be overlapping
-  overlappingStates = new SetOfPairs
 
-  shuttleStates.addWatch.forward (state) ->
-    state.shuttle.points.forEach (x, y, v) ->
-      x += state.dx; y += state.dy
-      stateGrid.getDef(x, y).add state
-      watch.signal x, y
-    addAdjacentStates state
-    addOverlappingStates state
+  shuttleStates.addWatch.forward (state1) ->
+    return unless state1.valid
+    assert state1.shuttle.used
 
-  shuttleStates.deleteWatch.on (state) ->
-    #log 'deleteWatch on state', state
-    state.shuttle.points.forEach (x, y, v) ->
-      x += state.dx; y += state.dy
-      stateGrid.get(x, y).delete state
-      watch.signal x, y
-
-    adjacentStates.deleteAll state
-    overlappingStates.deleteAll state
-
-  addAdjacentStates = (state1) ->
     state1.shuttle.edges.forEach (x, y, dir) ->
+      # Go through all the cells that lie just outside of the edge.
+      # Note these will repeat sometimes.
       {dx, dy} = DIRS[dir]
       x += state1.dx + dx; y += state1.dy + dy
 
-      stateGrid.get(x, y)?.forEach (state2) ->
+      shuttleGrid.stateGrid.get(x, y)?.forEach (state2) ->
         return if state2.shuttle is state1.shuttle
         #log 'adjacent states found', state1, state2
+        assert state2.shuttle.used
         adjacentStates.add state1, state2
 
-  addOverlappingStates = (state1) ->
+  shuttleStates.deleteWatch.on (state) ->
+    return unless state.valid
+    adjacentStates.deleteAll state
+    #log 'adj', adjacentStates
+
+  currentStates.watch.on (shuttle1, state1) ->
+    #log '-----> csw', state1
+    assert shuttle1.used
+    adjacentStates.getAll(state1)?.forEach (state2) ->
+      # The shuttle might be adjacent to several other shuttles.
+      #log 'checking', state1, state2
+      shuttle2 = state2.shuttle
+      # We need to use getImmediate here so shuttles don't collide while
+      # they're moving.
+      if currentStates.getImmediate(shuttle2) is state2
+        # Oof. collapse.
+        #log 'ccccc', shuttle1.id, shuttle2.id
+        #log 'ccccc', state1, state2
+        shuttles.delete shuttle1, state1.dx, state1.dy if shuttle1.used
+        assert shuttle2.used
+        shuttles.delete shuttle2, state2.dx, state2.dy
+
+    #log '<----- csw'
+
+  checkEmpty: ->
+    assert.equal 0, adjacentStates.size
+
+ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
+  # Pairs of states in different shuttles which would overlap
+  overlappingStates = new SetOfPairs
+
+  shuttleStates.addWatch.forward (state1) ->
+    return unless state1.valid
     state1.shuttle.points.forEach (x, y) ->
-      stateGrid.get(x+state1.dx, y+state1.dy)?.forEach (state2) ->
+      shuttleGrid.stateGrid.get(x+state1.dx, y+state1.dy)?.forEach (state2) ->
         return if state2.shuttle is state1.shuttle
         #log 'overlapping states', state1, state2
         overlappingStates.add state1, state2
 
-  grid.beforeWatch.forward (x, y, oldV, v) ->
-    stateGrid.get(x, y)?.forEach (state) ->
-      shuttle = state.shuttle
-      # We want to collapse it to its current position, not the state which
-      # collided.
-      state = currentStates.map.get shuttle
-      shuttles.collapseShuttle shuttle, state
+  shuttleStates.deleteWatch.on (state) ->
+    overlappingStates.deleteAll state
 
-  currentStates.watch.on (shuttle1, state1) ->
-    adjacentStates.getAll(state1)?.forEach (state2) ->
-      shuttle2 = state2.shuttle
-      if currentStates.getImmediate(shuttle2) is state2
-        # Oof. collapse.
-        shuttles.collapseShuttle shuttle1, state1
-        shuttles.collapseShuttle shuttle2, state2# if shuttle2.used
-
-  watch: watch
-  willCombine: (shuttle) -> toCombine.has shuttle
-
-  shuttleWillOverlap: (shuttle1, state1) ->
+  willOverlap: (shuttle1, state1) ->
     # Would the named shuttle overlap with something if it enters the named state?
     overlap = no
     overlappingStates.getAll(state1)?.forEach (state2) ->
@@ -1198,26 +1234,66 @@ ShuttleGrid = (grid, shuttles, shuttleStates, currentStates, stepWatch) ->
 
 
 
+
+
+collapseWhenBaseChanged = (grid, shuttleGrid) ->
+  grid.beforeWatch.forward (x, y, oldV, v) ->
+    shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
+      shuttle = state.shuttle
+      # We want to collapse it to its current position, not the state which
+      # collided.
+      #   Do we need to check that the shuttle is in currentStates here?
+      state = shuttle.currentState
+      # Collapse!
+      #
+      # .. Think about removing all the other shuttle states instead of burning
+      # it back into the grid.
+      shuttles.delete shuttle, state.dx, state.dy
+
+
+
 module.exports = Jit = (rawGrid) ->
-  grid = Grid rawGrid
+  grid = BaseGrid()
 
   # This is a watcher which emits events just before & after step().
   stepWatch = new Watcher
 
-  shuttles = BlobFiller 'shuttle', grid
-  engines = BlobFiller 'engine', grid
+  engineBuffer = EngineBuffer grid
+  engines = BlobFiller 'engine', engineBuffer, grid
+
+  shuttleBuffer = ShuttleBuffer()
+  shuttles = BlobFiller 'shuttle', shuttleBuffer, grid
+
   shuttleStates = ShuttleStates grid, shuttles
-  fillGrid = FillGrid shuttleStates
-  cellGroups = CellGroups grid, engines, fillGrid
-  stateForce = StateForce shuttleStates, cellGroups
-  groupConnections = GroupConnections cellGroups
-  regions = Regions fillGrid, cellGroups, groupConnections
+  shuttleGrid = ShuttleGrid shuttleStates
+  fillKeys = FillKeys shuttleStates, shuttleGrid
+  groups = Groups grid, engines, shuttleGrid, fillKeys
+  stateForce = StateForce shuttleStates, groups
+  groupConnections = GroupConnections groups
+  regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
-  zones = Zones regions, currentStates
+  zones = Zones shuttles, regions, currentStates
   dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
 
+  shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
-  shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
+  #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
+  shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
+
+  collapseWhenBaseChanged grid, shuttleGrid
+
+
+  set = (x, y, v) ->
+    if v in ['shuttle', 'thinshuttle']
+      grid.set x, y, 'nothing'
+      shuttleBuffer.set x, y, v
+    else
+      grid.set x, y, v
+
+  for k, v of rawGrid when k not in ['tw', 'th']
+    {x,y} = parseXY k
+    set x, y, v
+
 
   zones: zones
   step: ->
@@ -1231,7 +1307,7 @@ module.exports = Jit = (rawGrid) ->
       #return if shuttleGrid.willCombine shuttle
        
       # Consider moving the shuttle.
-      state = currentStates.map.get shuttle
+      state = shuttle.currentState
       force = stateForce.get state
 
       # Set of zones which, when deleted, will make the shuttle dirty again.
@@ -1240,7 +1316,7 @@ module.exports = Jit = (rawGrid) ->
       deps = new Set
 
       # Y first.
-      log 'shuttle force', force
+      #log 'shuttle force', force
       for d in ['y', 'x'] when (f = force[d])
         impulse = 0
 
@@ -1248,7 +1324,10 @@ module.exports = Jit = (rawGrid) ->
           log 'calculating pressure in group', group
           assert group.used
           zone = zones.getZoneForGroup group
-          #return if zone is null # Zone is null if the group is filled.
+          # Zone is null if the group is filled. But the group should never be
+          # filled, because if it was this shuttle would have glommed on to
+          # another shuttle anyway.
+          #return if zone is null
           assert zone.used
           log 'pressure', zone.pressure
           deps.add zone
@@ -1271,7 +1350,7 @@ module.exports = Jit = (rawGrid) ->
           break unless (next = shuttleStates.getStateNear state, dir)
 
           # This shuttle is about to collide into another shuttle. ABORT!
-          break if shuttleGrid.shuttleWillOverlap shuttle, next
+          break if shuttleOverlap.willOverlap shuttle, next
           state = next
           moved = yes
           impulse--
@@ -1291,23 +1370,44 @@ module.exports = Jit = (rawGrid) ->
     # zones for the next step() call.
     stepWatch.signal 'after'
 
+    @printGrid()
+    @check()
+
   check: (invasive) ->
     shuttles.check invasive
     #engines.check invasive
-    cellGroups.check invasive
+    shuttleGrid.check invasive
+    groups.check invasive
     groupConnections.check invasive
     regions.check invasive
 
+    # Each shuttle should be on top of nothing
+    shuttles.forEach (shuttle) ->
+      shuttle.eachCurrentPoint (x, y, v) ->
+        baseV = grid.get x, y
+        assert baseV in ['nothing', 'bridge']
+
+    # No two shuttles should be touching to each other and un-merged
+    map = new Map2
+    shuttles.forEach (shuttle) ->
+      shuttle.eachCurrentPoint (x, y, v) ->
+        for {dx, dy} in DIRS
+          s2 = map.get(x+dx, y+dy)
+          assert !s2 || s2 == shuttle
+        map.set x, y, shuttle
+
+
   checkEmpty: ->
-    cellGroups.checkEmpty()
+    groups.checkEmpty()
     groupConnections.checkEmpty()
     regions.checkEmpty()
     zones.checkEmpty()
+    adjacentStates.checkEmpty()
 
   printGrid: ->
     overlay = new Map2
     shuttles.forEach (s) ->
-      {dx, dy} = state = currentStates.map.get s
+      {dx, dy} = state = s.currentState
       s.points.forEach (x, y, v) ->
         overlay.set x+dx, y+dy, v
 
@@ -1324,17 +1424,18 @@ module.exports = Jit = (rawGrid) ->
       v = 'nothing' if v in ['shuttle', 'thinshuttle']
       json["#{x},#{y}"] = v if v?
     shuttles.forEach (s) ->
-      {dx, dy} = state = currentStates.map.get s
+      {dx, dy} = state = s.currentState
       s.points.forEach (x, y, v) ->
         json["#{x+dx},#{y+dy}"] = v
     json
 
+  set: set
   grid: grid
-  groups: cellGroups
+  groups: groups
   shuttles: shuttles
   engines: engines
   getShuttlePos: (shuttle) ->
-    state = currentStates.map.get shuttle
+    state = shuttle.currentState
     return {dx:state.dx, dy:state.dy}
 
 
