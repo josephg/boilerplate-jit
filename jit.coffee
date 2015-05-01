@@ -975,7 +975,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
     state = shuttleStates.getInitialState s
     s.currentState = state
     currentStates.set s, state
-    watch.signal s, state
+    watch.signal s, null, state
 
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
@@ -987,9 +987,10 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
       # Call this at the end of step()
       patch.forEach (state, shuttle) ->
         log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
+        prev = shuttle.currentState
         shuttle.currentState = state
         currentStates.set shuttle, state
-        watch.signal shuttle, state
+        watch.signal shuttle, prev, state
       patch.clear()
  
   map: currentStates
@@ -1137,7 +1138,7 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
       shuttlesForZone.delete z
 
   # The state changed. Make that sucker dirty.
-  currentStates.watch.on (shuttle, state) ->
+  currentStates.watch.on (shuttle) ->
     setDirty shuttle
 
   setDirty = (shuttle) ->
@@ -1186,7 +1187,7 @@ ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
     adjacentStates.deleteAll state
     #log 'adj', adjacentStates
 
-  currentStates.watch.on (shuttle1, state1) ->
+  currentStates.watch.on (shuttle1, prev, state1) ->
     #log '-----> csw', state1
     assert shuttle1.used
     adjacentStates.getAll(state1)?.forEach (state2) ->
@@ -1282,7 +1283,6 @@ module.exports = Jit = (rawGrid) ->
 
   collapseWhenBaseChanged grid, shuttles, shuttleGrid
 
-
   set = (x, y, v) ->
     if v in ['shuttle', 'thinshuttle']
       grid.set x, y, 'nothing'
@@ -1297,8 +1297,22 @@ module.exports = Jit = (rawGrid) ->
 
 
   zones: zones
+  modules: {
+    grid
+    stepWatch
+    engines
+    shuttles
+    shuttleStates
+    shuttleGrid
+    groups
+    regions
+    currentStates
+    zones
+  }
+
   step: ->
     log '------------ STEP ------------'
+    stepWatch.signal 'before'
     shuttles.flush()
 
     dirtyShuttles.forEach (shuttle) ->
