@@ -26,7 +26,7 @@ randomWeighted = (arr) ->
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
-log.quiet = yes
+log.quiet = no
 
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
@@ -386,6 +386,12 @@ ShuttleStates = (grid, shuttles) ->
 
     return successor if successor.valid
 
+  delete: (state) ->
+    log 'deleting state', state
+    shuttle = state.shuttle
+    assert shuttle.used
+    shuttleStates.get(shuttle).delete state.dx, state.dy
+    deleteWatch.signal state
 
 ShuttleGrid = (shuttleStates) ->
   # This stores a couple data structures describing how the shuttles interact
@@ -456,6 +462,38 @@ ShuttleGrid = (shuttleStates) ->
     return shuttle.points.get x-dx, y-dy
 
   check: ->
+
+CollapseDetector = (grid, shuttles, shuttleStates, shuttleGrid) ->
+  # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
+  # I split it out of ShuttleGrid for modularity's sake.
+ 
+  # Delete the shuttle when the base grid changes around it
+  grid.beforeWatch.forward (x, y, oldv, v) ->
+    # We only care if a cell that was previously passable became inpassable.
+    oldPassable = letsShuttleThrough(oldv)
+    newPassable = letsShuttleThrough(v)
+
+    if !oldPassable and newPassable
+      # We need to delete any states which are not valid so they can get regenerated
+      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
+        shuttleStates.delete state if !state.valid
+        
+    else if oldPassable and !newPassable
+      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
+        shuttle = state.shuttle
+
+        # So, two strategies for dealing with this.
+        if shuttle.currentState is state
+          # Option 1: If the base was edited underneath the current state, game
+          # over. Just bake the shuttle back onto the buffer in its current state
+          # and let nature take its course.
+          shuttles.delete shuttle, state
+        else
+          # Option 2: If the state isn't the current state, some set of the shuttle
+          # states might no longer be reachable. I'll delete all states which
+          # aren't the current state.
+          shuttleStates.collapse shuttle
+
 
 FillKeys = (grid, shuttleStates, shuttleGrid) ->
   # The fill key is used for cell groups. Every adjacent grid cell with the
@@ -746,8 +784,14 @@ StateForce = (shuttleStates, groups) ->
   # the groups before they're invalidated, it could give us n^2 performance.
   #
   # So we'll just generate forces lazily, when the shuttle is actually needed.
-  shuttleStates.deleteWatch.on (state) ->
-    deleteForce state
+  shuttleStates.deleteWatch.on (state0) ->
+    deleteForce state0
+    # Cross of death. If an adjacent invalid state was removed, we will have
+    # discounted forces pushing in that direction.
+    if (states = shuttleStates.get state0.shuttle)
+      for {dx, dy} in DIRS
+        state = states.get state0.dx+dx, state0.dy+dy
+        deleteForce state if state
 
   groups.watch.on (group) ->
     #log.quiet = no if group._id is 60114
@@ -1189,7 +1233,7 @@ Zones = (shuttles, regions, currentStates) ->
     assert.equal 0, zoneForRegion.size
 
 
-DirtyShuttles = (shuttles, currentStates, zones) ->
+DirtyShuttles = (shuttles, shuttleStates, currentStates, zones) ->
   # This keeps track of shuttles which might move on the next step. This includes
   # any shuttle which just moved, shuttles next to a zone which was
   # just destroyed.
@@ -1223,6 +1267,10 @@ DirtyShuttles = (shuttles, currentStates, zones) ->
   # The state changed. Make that sucker dirty.
   currentStates.watch.on (shuttle) ->
     setDirty shuttle
+  shuttleStates.deleteWatch.on (state) ->
+    log 'deletewatch', state
+    # We'll delete invalid states when the region is passable once again
+    setDirty state.shuttle
 
   setDirty = (shuttle) ->
     dirty.add shuttle
@@ -1319,31 +1367,6 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 
-CollapseDetector = (grid, shuttles, shuttleStates, shuttleGrid) ->
-  # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
-  # I split it out of ShuttleGrid for modularity's sake.
- 
-  # Delete the shuttle when the base grid changes around it
-  grid.beforeWatch.forward (x, y, oldv, v) ->
-    # We only care if a cell that was previously passable became inpassable.
-    return unless letsShuttleThrough(oldv) && !letsShuttleThrough(v)
-
-    shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
-      shuttle = state.shuttle
-
-      # So, two strategies for dealing with this.
-      if shuttle.currentState is state
-        # Option 1: If the base was edited underneath the current state, game
-        # over. Just bake the shuttle back onto the buffer in its current state
-        # and let nature take its course.
-        shuttles.delete shuttle, state
-      else
-        # Option 2: If the state isn't the current state, some set of the shuttle
-        # states might no longer be reachable. I'll delete all states which
-        # aren't the current state.
-        shuttleStates.collapse shuttle
-
-
 
 
 module.exports = Jit = (rawGrid) ->
@@ -1368,7 +1391,7 @@ module.exports = Jit = (rawGrid) ->
   regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
   zones = Zones shuttles, regions, currentStates
-  dirtyShuttles = DirtyShuttles shuttles, currentStates, zones
+  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, currentStates, zones
 
   shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
