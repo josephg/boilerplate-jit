@@ -178,31 +178,25 @@ BlobFiller = (type, buffer, grid) ->
 
     blobs.add this
 
-    # To collect the shuttle's edge, we'll flood fill passing in a third
-    # parameter - which is the direction we approached a cell from.
-    util.fill3 x, y, 0, (x, y, dir, hmm) =>
-      v = buffer.data.get x, y
-
-      if !v or (type is 'engine' and v != v0)
-        # This adds the slot that the edge lives in.
-        d = DIRS[dir]
-        @edges.add x-d.dx, y-d.dy, dir
-        return
-
-      if v is 'shuttle' then for {dx, dy},d in DIRS
-        x2 = x+dx; y2 = y+dy
-        v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
-        if v2 != 'shuttle'
-          @pushEdges.add x, y, d
-
+    # The third parameter is really just cached via the fill mechanism... but
+    # it means I don't need both fill2 and fill3 in util.
+    util.fill3 x, y, v0, (x, y, v, hmm) =>
       buffer.pump x, y
 
       @size++
       @points.set x, y, v
 
-      for {dx, dy},dir in DIRS
-        hmm x+dx, y+dy, dir
-      return
+      for {dx, dy},d in DIRS
+        x2 = x+dx; y2 = y+dy
+        v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
+
+        if v is 'shuttle' and v2 isnt 'shuttle'
+          @pushEdges.add x, y, d
+
+        if v2 and (type isnt 'engine' or v2 == v)
+          hmm x2, y2, v2
+        else
+          @edges.add x, y, d
 
     assert @size
     if type is 'engine'
@@ -1603,14 +1597,6 @@ module.exports = Jit = (rawGrid) ->
   set: set
 
 
-###
-start = Date.now()
-jit = new Jit require './cpu.json'
-#jit.torture()
-end = Date.now()
-console.log end - start
-
-###
 parseFile = exports.parseFile = (filename, opts) ->
   torture =
     if filename in ['-t', 'torture']
