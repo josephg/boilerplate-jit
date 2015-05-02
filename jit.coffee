@@ -105,6 +105,7 @@ ShuttleBuffer = ->
   watch = new Watcher
 
   set: (x, y, v) ->
+    #assert !isNaN x
     if v?
       assert v in ['shuttle', 'thinshuttle']
       return if buffer.get(x, y) is v
@@ -135,6 +136,8 @@ BlobFiller = (type, buffer, grid) ->
   deleteBlob = (b, dx, dy) ->
     return no unless blobs.delete b
 
+    assert dx?
+
     #console.trace "deleteBlob #{dx},#{dy}"
 
     log "Destroyed #{type} #{b.id} at", b.points
@@ -149,7 +152,6 @@ BlobFiller = (type, buffer, grid) ->
     return yes
 
   Blob = (x, y, v0) ->
-    #log 'makeBlob at', x, y
     #v0 = buffer.peek x, y
     #assert buffer.data.get(x, y) in match
 
@@ -211,6 +213,7 @@ BlobFiller = (type, buffer, grid) ->
 
   flush: ->
     buffer.data.forEach (x, y, v) ->
+      #assert !isNaN x
       new Blob x, y, v
 
   flushAt: (x, y) ->
@@ -300,8 +303,9 @@ ShuttleStates = (grid, shuttles) ->
       states.forEach (x, y, state) ->
         deleteWatch.signal state
 
-  shuttles.addWatch.forward (shuttle) ->
-    createStateAt shuttle, 0, 0
+  #shuttles.addWatch.forward (shuttle) ->
+  #  # This isn't necessary because CurrentStates will call getInitialState() anyway.
+  #  createStateAt shuttle, 0, 0
 
   canShuttleFitAt = (shuttle, dx, dy) ->
     fits = yes
@@ -314,6 +318,8 @@ ShuttleStates = (grid, shuttles) ->
     states = shuttleStates.get shuttle
 
     valid = canShuttleFitAt shuttle, dx, dy
+    assert valid if dx is 0 and dy is 0
+
     state =
       dx: dx
       dy: dy
@@ -346,7 +352,7 @@ ShuttleStates = (grid, shuttles) ->
   deleteWatch: deleteWatch
   get: (s) -> shuttleStates.get(s)
 
-  getInitialState: (s) -> @get(s).get(0,0)
+  getInitialState: (s) -> @get(s)?.get(0,0) or createStateAt s, 0, 0
 
   getStateNear: (state, dir) -> # Dir is a number.
     assert state.shuttle.used
@@ -708,7 +714,8 @@ StateForce = (shuttleStates, groups) ->
     deleteForce state
 
   groups.watch.on (group) ->
-    #log 'got group deleted', group._id
+    #log.quiet = no if group._id is 60114
+    log 'got group deleted', group._id
     if (set = stateForGroup.get group)
       set.forEach (state) -> deleteForce state
 
@@ -719,7 +726,9 @@ StateForce = (shuttleStates, groups) ->
     if (force = stateForce.get state)
       stateForce.delete state
 
-      #log 'deleteForce', force
+      log 'deleteForce', state
+
+      force.used = no
 
       delGroups = (pressure, group) ->
         if (set = stateForGroup.get group)
@@ -742,6 +751,7 @@ StateForce = (shuttleStates, groups) ->
     force =
       x: if canMoveX then new Map
       y: if canMoveY then new Map
+      used: yes
 
     force.x?.default = -> 0
     force.y?.default = -> 0
@@ -777,7 +787,10 @@ StateForce = (shuttleStates, groups) ->
     #log '-> makeForce', force
     force
 
-  get: (state) -> stateForce.getDef state
+  get: (state) ->
+    f = stateForce.getDef state
+    assert f.used
+    f
 
 
 GroupConnections = (groups) ->
@@ -1005,6 +1018,11 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
     patch.delete s
+    currentStates.delete s
+    # This is important so in the shuttle collide code we don't double-collide
+    # a shuttle (if we just delete it in patch, its currentState will revert
+    # and it might collide with something else).
+    s.currentState = null
     # If you care about the current state going away, watch shuttles.deleteWatch.
 
   stepWatch.on (time) ->
@@ -1313,6 +1331,14 @@ module.exports = Jit = (rawGrid) ->
     if v in ['shuttle', 'thinshuttle']
       if !letsShuttleThrough grid.get x, y
         grid.set x, y, 'nothing'
+
+      # + of death. This should probably get moved somewhere else.
+      if (s = shuttleGrid.get x, y)
+        shuttles.delete s, s.currentState.dx, s.currentState.dy
+      for {dx,dy} in DIRS
+        if (s = shuttleGrid.get x+dx, y+dy)
+          shuttles.delete s, s.currentState.dx, s.currentState.dy
+
       shuttleBuffer.set x, y, v
     else
       grid.set x, y, v
@@ -1354,6 +1380,7 @@ module.exports = Jit = (rawGrid) ->
       #return if shuttleGrid.willCombine shuttle
        
       # Consider moving the shuttle.
+      assert shuttle.used
       state = shuttle.currentState
       force = stateForce.get state
 
@@ -1365,6 +1392,7 @@ module.exports = Jit = (rawGrid) ->
       # Y first.
       #log 'shuttle force', force
       for d in ['y', 'x'] when (f = force[d])
+        assert force.used # If this is a problem, just get it again.
         impulse = 0
 
         f.forEach (mult, group) ->
@@ -1397,7 +1425,17 @@ module.exports = Jit = (rawGrid) ->
           break unless (next = shuttleStates.getStateNear state, dir)
 
           # This shuttle is about to collide into another shuttle. ABORT!
-          break if shuttleOverlap.willOverlap shuttle, next
+          if shuttleOverlap.willOverlap shuttle, next
+            # Very important. Because getStateNear above might have resulted in
+            # some groups being deleted, the state we're iterating through with
+            # (y,x) might now be invalid.
+            #
+            # Its important that we don't try and move the other way now that a
+            # collision has nearly happened. The other solution to this is to
+            # call stateForce.get() again each time through the loop.
+            moved = yes
+            break
+
           state = next
           moved = yes
           impulse--
@@ -1450,12 +1488,15 @@ module.exports = Jit = (rawGrid) ->
     groupConnections.checkEmpty()
     regions.checkEmpty()
     zones.checkEmpty()
-    adjacentStates.checkEmpty()
+    shuttleAdjacency.checkEmpty()
 
   printGrid: ->
     overlay = new Map2
     shuttles.forEach (s) ->
-      {dx, dy} = state = s.currentState
+      state = s.currentState
+      if !state
+        return log 'no state for', s
+      {dx, dy} = state
       s.points.forEach (x, y, v) ->
         overlay.set x+dx, y+dy, v
 
