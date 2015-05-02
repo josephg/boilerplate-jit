@@ -291,7 +291,12 @@ EngineGrid = (grid, engines) ->
 ShuttleStates = (grid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
   # entry (the shuttle's starting state). States are added when the shuttle is
-  # created or the shuttle moves
+  # created or the shuttle moves.
+  #
+  # This module is kind of incomplete - when the grid changes, generated states
+  # aren't removed from the state grid. They're only removed when the shuttle
+  # itself is deleted. In practice, I do that work in CollapseDetector below -
+  # but it still irks me. These things should be self contained.
   shuttleStates = new Map # shuttle -> Map2(dx, dy) -> states
 
   addWatch = new Watcher (fn) ->
@@ -323,7 +328,6 @@ ShuttleStates = (grid, shuttles) ->
     states = shuttleStates.get shuttle
 
     valid = canShuttleFitAt shuttle, dx, dy
-    assert valid if dx is 0 and dy is 0
 
     state =
       dx: dx
@@ -358,6 +362,16 @@ ShuttleStates = (grid, shuttles) ->
   get: (s) -> shuttleStates.get(s)
 
   getInitialState: (s) -> @get(s)?.get(0,0) or createStateAt s, 0, 0
+
+  collapse: (shuttle) ->
+    log 'collapsing', shuttle
+    saved = shuttle.currentState
+    # Delete all states except for the current state
+    return unless (states = shuttleStates.get shuttle)
+    states.forEach (dx, dy, state) ->
+      return if state is saved # Hallelujah!
+      states.delete dx, dy
+      deleteWatch.signal state
 
   getStateNear: (state, dir) -> # Dir is a number.
     assert state.shuttle.used
@@ -1305,23 +1319,30 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 
-CollapseDetector = (grid, shuttles, shuttleGrid) ->
+CollapseDetector = (grid, shuttles, shuttleStates, shuttleGrid) ->
   # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
   # I split it out of ShuttleGrid for modularity's sake.
  
   # Delete the shuttle when the base grid changes around it
   grid.beforeWatch.forward (x, y, oldv, v) ->
+    # We only care if a cell that was previously passable became inpassable.
+    return unless letsShuttleThrough(oldv) && !letsShuttleThrough(v)
+
     shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
       shuttle = state.shuttle
-      # We want to collapse it to its current position, not the state which
-      # collided.
-      #   Do we need to check that the shuttle is in currentStates here?
-      state = shuttle.currentState
-      # Collapse!
-      #
-      # .. Think about removing all the other shuttle states instead of burning
-      # it back into the grid.
-      shuttles.delete shuttle, state
+
+      # So, two strategies for dealing with this.
+      if shuttle.currentState is state
+        # Option 1: If the base was edited underneath the current state, game
+        # over. Just bake the shuttle back onto the buffer in its current state
+        # and let nature take its course.
+        shuttles.delete shuttle, state
+      else
+        # Option 2: If the state isn't the current state, some set of the shuttle
+        # states might no longer be reachable. I'll delete all states which
+        # aren't the current state.
+        shuttleStates.collapse shuttle
+
 
 
 
@@ -1354,7 +1375,7 @@ module.exports = Jit = (rawGrid) ->
   #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
-  CollapseDetector grid, shuttles, shuttleGrid
+  CollapseDetector grid, shuttles, shuttleStates, shuttleGrid
 
   modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
