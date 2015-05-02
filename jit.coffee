@@ -26,7 +26,7 @@ randomWeighted = (arr) ->
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
-log.quiet = no
+log.quiet = yes
 
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
@@ -1452,6 +1452,8 @@ module.exports = Jit = (rawGrid) ->
     dirtyShuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle
 
+      return if shuttle.held # Manually set from the UI.
+
       # This is all a bit of a hack.
       #return if shuttleGrid.willCombine shuttle
        
@@ -1533,6 +1535,16 @@ module.exports = Jit = (rawGrid) ->
 
     #@printGrid()
     @check()
+
+  moveShuttle: (shuttle, state) ->
+    # Try to move the named shuttle to the specified state immediately. This
+    # makes a crappy fake step, and runs the edit there.
+    #
+    # Never call this while we're in step().
+    stepWatch.signal 'before'
+    if !shuttleOverlap.willOverlap shuttle, state
+      currentStates.set shuttle, state
+    stepWatch.signal 'after'
 
   check: (invasive) ->
     shuttles.check invasive
