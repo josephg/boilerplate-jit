@@ -24,8 +24,9 @@ randomWeighted = (arr) ->
 
     v
 
-letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing']
+letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
+log.quiet = yes
 
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
@@ -50,17 +51,17 @@ BaseGrid = ->
   set: (x, y, v) ->
     v = undefined if v is null
     assert v not in ['shuttle', 'thinshuttle']
-    oldV = grid.get x, y
-    beforeWatch.signal x, y, oldV, v
-    # oldV might have changed as a result of signaling.
-    oldV = grid.get x, y
+    oldv = grid.get x, y
+    beforeWatch.signal x, y, oldv, v
+    # oldv might have changed as a result of signaling.
+    oldv = grid.get x, y
 
-    if v != oldV
+    if v != oldv
       if v
         grid.set x, y, v
       else
         grid.delete x, y
-      afterWatch.signal x, y, oldV, v
+      afterWatch.signal x, y, oldv, v
       return yes
     else
       return no
@@ -78,24 +79,18 @@ EngineBuffer = (grid) ->
   # When cells are turned into engines, they get deleted from the grid. Then
   # they get added back when the shuttle / engine is deleted.
   buffer = new Map2
-
   watch = new Watcher
 
   grid.afterWatch.forward (x, y, oldv, v) ->
     if oldv in ['positive', 'negative']
-      watch.signal x, y if !buffer.has x, y # Reclaim the old value
-
-      # Then get rid of it.
+      # This working depends on EngineGrid, below.
+      assert.equal buffer.get(x, y), oldv
       buffer.delete x, y
+      watch.signal x, y
 
     if v in ['positive', 'negative']
-      # Reap adjacent cells. This might be special for shuttles?
-      watch.signal x+dx, y+dy for {dx, dy} in DIRS
       buffer.set x, y, v
-
-    # Technically we don't need to signal if the consumer hasn't consumed this
-    # value and we deleted it. But signaling anyway is simpler and shouldn't
-    # cause problems.
+      watch.signal x, y, v
 
   watch: watch
   data: buffer
@@ -132,16 +127,11 @@ BlobFiller = (type, buffer, grid) ->
   throw Error 'Invalid type' unless type in ['shuttle', 'engine']
 
   blobs = new Set
-  blobGrid = new Map2 # x,y -> shuttle.
   addWatch = new Watcher (fn) -> blobs.forEach fn
   deleteWatch = new Watcher
 
-  if type is 'engine'
-    # Shuttles get destroyed using ShuttleGrid
-    buffer.watch.on (x, y) ->
-      b = blobGrid.get x, y
-      deleteBlob b, 0, 0
-
+  # Shuttles and engines get destroyed using ShuttleGrid and EngineGrid
+  # respectively - which call .delete()
   deleteBlob = (b, dx, dy) ->
     return no unless blobs.delete b
 
@@ -200,8 +190,6 @@ BlobFiller = (type, buffer, grid) ->
 
       buffer.pump x, y
 
-      blobGrid.set x, y, this
-
       @size++
       @points.set x, y, v
 
@@ -227,36 +215,20 @@ BlobFiller = (type, buffer, grid) ->
 
   flushAt: (x, y) ->
     if v = buffer.data.get x, y
-      new Blob x, y, v
+      return new Blob x, y, v
 
   forEach: (fn) ->
     @flush()
     blobs.forEach fn
 
-  get: (x, y) ->
-    @flushAt x, y
-    s = blobGrid.get x, y
-    return s if s?.used
-
   delete: deleteBlob
 
   check: (invasive) ->
     @forEach(->) if invasive
-
-    blobGrid.forEach (x, y, b) ->
-      return unless b.used
-      # - No two different blobs should be adjacent to each other
-      for {dx, dy} in DIRS
-        b2 = blobGrid.get x+dx, y+dy
-        continue unless b2?.used
-        assert b2 is b if type isnt 'engine' or b.type == b2.type
-
+    ###
     blobs.forEach (b) =>
       assert b.used
       b.points.forEach (x, y, v) =>
-        # - Shuttles are represented in the grid
-        b2 = blobGrid.get(x, y)
-        assert.equal b, b2
         assert.equal @get(x, y), b
         # - Shuttles always have all adjacent shuttle / thinshuttle points
         for {dx, dy} in DIRS when !b.points.has x+dx,y+dy
@@ -265,12 +237,53 @@ BlobFiller = (type, buffer, grid) ->
             assert v2 not in ['shuttle', 'thinshuttle']
           else
             assert v2 != v
+    ###
 
+EngineGrid = (grid, engines) ->
+  engineGrid = new Map2 # x,y -> engine
+
+  grid.beforeWatch.forward (x, y, oldv, v) ->
+    if oldv in ['positive', 'negative'] and (e = engineGrid.get x, y)
+      #log 'deleting engine at', x, y, e
+      engines.delete e, 0, 0
+
+    # Engines really don't care about anything else.
+    if v in ['positive', 'negative']
+      # Reap adjacent cells. This might be special for shuttles?
+      for {dx, dy} in DIRS when (e = engineGrid.get x+dx, y+dy)
+        engines.delete e, 0, 0
+
+  engines.addWatch.forward (engine) ->
+    engine.points.forEach (x, y, v) ->
+      engineGrid.set x, y, engine
+
+  engines.deleteWatch.on (engine) ->
+    engine.points.forEach (x, y) -> engineGrid.delete x, y
+
+  get: (x, y) ->
+    e = engineGrid.get x, y
+    if !e
+      return engines.flushAt x, y
+    else
+      return e
+
+  check: (invasive) ->
+    engineGrid.forEach (x, y, e) ->
+      assert e.used
+      # - No two engines of the same type should be adjacent
+      for {dx, dy} in DIRS when (e2 = engineGrid.get x+dx, y+dy)
+        assert e2 == e or e.type != e2.type
+
+      # - Engines are represented in the grid
+      e.points.forEach (x, y, v) ->
+        assert.equal engineGrid.get(x, y), e
+
+ 
 
 ShuttleStates = (grid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
-  # entry (the shuttle's starting state). States are added when the shuttle
-  # moves
+  # entry (the shuttle's starting state). States are added when the shuttle is
+  # created or the shuttle moves
   shuttleStates = new Map # shuttle -> Map2(dx, dy) -> states
 
   addWatch = new Watcher (fn) ->
@@ -286,6 +299,9 @@ ShuttleStates = (grid, shuttles) ->
       shuttleStates.delete shuttle
       states.forEach (x, y, state) ->
         deleteWatch.signal state
+
+  shuttles.addWatch.forward (shuttle) ->
+    createStateAt shuttle, 0, 0
 
   canShuttleFitAt = (shuttle, dx, dy) ->
     fits = yes
@@ -322,13 +338,13 @@ ShuttleStates = (grid, shuttles) ->
     # yet (because of how the shuttle group works).
     #
     # NEVER CALL ME on a burning pass - or you might get wacky N^2 behaviour.
-    s = shuttles.get x, y
-    @get s if s
+    shuttles.flushAt x, y
+    #s = shuttles.get x, y
+    #@get s if s
 
   addWatch: addWatch
   deleteWatch: deleteWatch
-  get: (s) ->
-    shuttleStates.get(s) or (createStateAt(s, 0, 0, []); shuttleStates.get s)
+  get: (s) -> shuttleStates.get(s)
 
   getInitialState: (s) -> @get(s).get(0,0)
 
@@ -399,6 +415,14 @@ ShuttleGrid = (shuttleStates) ->
   stateGrid: stateGrid
   stateWatch: stateWatch
 
+  get: (x, y) ->
+    # Get the shuttle currently at (x, y)
+    shuttle = null
+    stateGrid.get(x, y)?.forEach (state) ->
+      if state.shuttle.currentState is state
+        shuttle = state.shuttle
+    return shuttle
+
   check: ->
 
 FillKeys = (shuttleStates, shuttleGrid) ->
@@ -464,7 +488,7 @@ FillKeys = (shuttleStates, shuttleGrid) ->
 
 
 
-Groups = (grid, engines, shuttleGrid, fillKeys) ->
+Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
   # contain the same regions.
@@ -517,10 +541,10 @@ Groups = (grid, engines, shuttleGrid, fillKeys) ->
     group.edges.forEach (x, y, c) ->
       edgeGrid.get(x, y).delete group
 
-  grid.afterWatch.forward (x, y, oldV, v) ->
-    cmax = util.cellMax oldV
+  grid.afterWatch.forward (x, y, oldv, v) ->
+    cmax = util.cellMax oldv
     for c in [0...cmax]
-      #log '---', x, y, c, oldV
+      #log '---', x, y, c, oldv
       group = groupGrid.get x, y, c
       deleteGroup group if group
       pendingCells.delete x, y, c
@@ -599,7 +623,8 @@ Groups = (grid, engines, shuttleGrid, fillKeys) ->
       assert pendingCells.has x, y, c
       pendingCells.delete x, y, c
 
-      if e = engines.get x, y
+      if v in ['positive', 'negative']
+        e = engineGrid.get x, y
         group.engines.add e
         groupsWithEngine.getDef(e).add group
 
@@ -894,7 +919,7 @@ Regions = (fillKeys, groups, groupConnections) ->
       @groups.add group
       group.engines.forEach (e) => @engines.add e
 
-      groupConnections.get(group).forEach hmm
+      groupConnections.get(group)?.forEach hmm
       
     assert @size
     regions.add this
@@ -1238,7 +1263,7 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 collapseWhenBaseChanged = (grid, shuttles, shuttleGrid) ->
-  grid.beforeWatch.forward (x, y, oldV, v) ->
+  grid.beforeWatch.forward (x, y, oldv, v) ->
     shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
       shuttle = state.shuttle
       # We want to collapse it to its current position, not the state which
@@ -1261,6 +1286,7 @@ module.exports = Jit = (rawGrid) ->
 
   engineBuffer = EngineBuffer grid
   engines = BlobFiller 'engine', engineBuffer, grid
+  engineGrid = EngineGrid grid, engines
 
   shuttleBuffer = ShuttleBuffer()
   shuttles = BlobFiller 'shuttle', shuttleBuffer, grid
@@ -1268,7 +1294,7 @@ module.exports = Jit = (rawGrid) ->
   shuttleStates = ShuttleStates grid, shuttles
   shuttleGrid = ShuttleGrid shuttleStates
   fillKeys = FillKeys shuttleStates, shuttleGrid
-  groups = Groups grid, engines, shuttleGrid, fillKeys
+  groups = Groups grid, engines, engineGrid, shuttleGrid, fillKeys
   stateForce = StateForce shuttleStates, groups
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
@@ -1285,7 +1311,8 @@ module.exports = Jit = (rawGrid) ->
 
   set = (x, y, v) ->
     if v in ['shuttle', 'thinshuttle']
-      grid.set x, y, 'nothing'
+      if !letsShuttleThrough grid.get x, y
+        grid.set x, y, 'nothing'
       shuttleBuffer.set x, y, v
     else
       grid.set x, y, v
@@ -1296,11 +1323,16 @@ module.exports = Jit = (rawGrid) ->
     set x, y, v
 
 
+  grid: grid
+  groups: groups
+  shuttles: shuttles
+  engines: engines
   zones: zones
   modules: {
     grid
     stepWatch
     engines
+    engineGrid
     shuttles
     shuttleStates
     shuttleGrid
@@ -1391,6 +1423,7 @@ module.exports = Jit = (rawGrid) ->
   check: (invasive) ->
     shuttles.check invasive
     #engines.check invasive
+    engineGrid.check invasive
     shuttleGrid.check invasive
     groups.check invasive
     groupConnections.check invasive
@@ -1440,10 +1473,6 @@ module.exports = Jit = (rawGrid) ->
     json
 
   set: set
-  grid: grid
-  groups: groups
-  shuttles: shuttles
-  engines: engines
 
 
 ###
