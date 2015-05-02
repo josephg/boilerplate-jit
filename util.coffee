@@ -70,11 +70,6 @@ cellAt = (grid, x, y, dir) ->
     else
       null
 
-cellOpposite = (grid, x, y, dir) ->
-  {dx, dy} = DIRS[dir]
-  #log 'cellOpposite', x, y, DN[dir], x+dx, y+dy
-  cellAt grid, x+dx, y+dy, oppositeDir(dir)
-
 exports.cellMax = (v) ->
   switch v
     when 'positive', 'negative' then 4
@@ -96,8 +91,9 @@ connectedCells = exports.connectedCells = (grid, x, y, c) ->
       [] # Nothing is connected to nothin'.
 
   cells = []
-  for d in dirs
-    cell = cellOpposite grid, x, y, d
+  for dir in dirs
+    {dx,dy} = DIRS[dir]
+    cell = cellAt grid, x+dx, y+dy, oppositeDir(dir)
     cells.push cell if cell
   cells
 

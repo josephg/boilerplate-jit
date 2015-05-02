@@ -26,7 +26,7 @@ randomWeighted = (arr) ->
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
-log.quiet = yes
+#log.quiet = yes
 
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
@@ -431,7 +431,7 @@ ShuttleGrid = (shuttleStates) ->
 
   check: ->
 
-FillKeys = (shuttleStates, shuttleGrid) ->
+FillKeys = (grid, shuttleStates, shuttleGrid) ->
   # The fill key is used for cell groups. Every adjacent grid cell with the
   # same fill key will always have the same pressure value regardless of
   # shuttle state. For now, the key is just a (stable) list of the states in
@@ -441,6 +441,8 @@ FillKeys = (shuttleStates, shuttleGrid) ->
   # Set of the actual states which fill for a particular key
   fillStates = new Map # Map from key -> set of states
   fillStates.default = -> new Set
+  fillStates.set '', new Set # Used *everywhere*.
+
   # For cleaning up fillStates when a state is removed.
   # Map from state -> set of keys
   keysReferencingState = new WeakMap
@@ -450,6 +452,9 @@ FillKeys = (shuttleStates, shuttleGrid) ->
 
   shuttleGrid.fillWatch.on (x, y) ->
     fillKey.delete x, y
+
+  grid.afterWatch.on (x, y, oldv, v) ->
+    fillKey.delete x, y if letsShuttleThrough oldv
 
   shuttleStates.deleteWatch.on (state) ->
     # We don't need to update fillKey because the fillWatch above will take
@@ -485,6 +490,7 @@ FillKeys = (shuttleStates, shuttleGrid) ->
   watch: watch
   getFilledStates: (key) -> fillStates.get key
   getFillKey: (x, y) ->
+    return '' if !letsShuttleThrough grid.get(x,y)
     shuttleStates.flushStatesAt x, y
     key = fillKey.get x, y
     if !key
@@ -492,6 +498,9 @@ FillKeys = (shuttleStates, shuttleGrid) ->
       fillKey.set x, y, key
     return key
 
+  checkEmpty: ->
+    assert.equal 0, fillKey.size
+    assert.equal 1, fillStates.size
 
 
 Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
@@ -504,7 +513,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
 
   # (x, y, cell) -> cell value. This works the same as the buffers for engines
   # and shuttles.
-  pendingCells = new Set3 # I really don't care what these are.
+  pendingCells = new Set3
 
   groups = new Set
 
@@ -695,6 +704,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
   checkEmpty: ->
     assert.equal 0, groups.size
     assert.equal 0, groupGrid.size
+    assert.equal 0, pendingCells.size
 
 StateForce = (shuttleStates, groups) ->
   # For each shuttle state, we need to know which groups apply a force.
@@ -910,6 +920,10 @@ Regions = (fillKeys, groups, groupConnections) ->
 
     log @_id, ': createRegion from group', group0._id#, shuttleStateMap
 
+    # Most cells (and hence most groups) have an empty fill key - I should
+    # totally be able to short circuit most of this, or just use the group in
+    # place of the region or something.
+ 
     util.fillGraph group0, (group, hmm) =>
       # There's three reasons we won't connect a region across group lines:
       # 1. We don't connect (in which case this won't be called)
@@ -1251,6 +1265,7 @@ ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
 
   checkEmpty: ->
     assert.equal 0, adjacentStates.size
+    adjacentStates.forEach (a, b) -> throw 'Should be empty'
 
 ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
   # Pairs of states in different shuttles which would overlap
@@ -1311,7 +1326,7 @@ module.exports = Jit = (rawGrid) ->
 
   shuttleStates = ShuttleStates grid, shuttles
   shuttleGrid = ShuttleGrid shuttleStates
-  fillKeys = FillKeys shuttleStates, shuttleGrid
+  fillKeys = FillKeys grid, shuttleStates, shuttleGrid
   groups = Groups grid, engines, engineGrid, shuttleGrid, fillKeys
   stateForce = StateForce shuttleStates, groups
   groupConnections = GroupConnections groups
@@ -1486,6 +1501,7 @@ module.exports = Jit = (rawGrid) ->
   checkEmpty: ->
     groups.checkEmpty()
     groupConnections.checkEmpty()
+    fillKeys.checkEmpty()
     regions.checkEmpty()
     zones.checkEmpty()
     shuttleAdjacency.checkEmpty()

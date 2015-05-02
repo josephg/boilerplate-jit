@@ -196,9 +196,10 @@ exports.Set2 = class Set2 # A set of (a,b) values
     return yes
 
   deleteAll: (v1) ->
-    if (set = inner.get v1)
+    console.trace()
+    if (set = @map.get v1)
       @size -= set.size
-      inner.delete v1
+      @map.delete v1
       return yes
 
     return no
@@ -256,10 +257,13 @@ exports.Set3 = class Set3
   delete: (v1, v2, v3) ->
     l1 = @map.get v1
     l2 = l1.get v2 if l1
-    if l2
-      deleted = l2.delete v3
-      @size-- if deleted
-      return deleted
+    if l2?.delete v3
+      @size--
+      if l2.size is 0
+        l1.delete v2
+        if l1.size is 0
+          @map.delete v1
+      return yes
     else
       return no
 
@@ -301,7 +305,9 @@ exports.SetOfPairs = class SetOfPairs extends Set2
   deleteAll: (a) ->
     if set = @map.get a
       set.forEach (b) =>
-        @map.get(b).delete a
+        set2 = @map.get b
+        set2.delete a
+        @map.delete b if set2.size is 0
 
       @map.delete a
       @size -= set.size * 2 # Both a->b and b->a relationships
