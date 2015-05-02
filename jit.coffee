@@ -103,7 +103,7 @@ ShuttleBuffer = ->
   # the shuttle is to both know when to delete it, and know where to put it. So
   # that happens somewhere else.
   buffer = new Map2
-  watch = new Watcher
+  watch = new Watcher # This is a beforeWatch
 
   set: (x, y, v) ->
     #assert !isNaN x
@@ -462,38 +462,6 @@ ShuttleGrid = (shuttleStates) ->
     return shuttle.points.get x-dx, y-dy
 
   check: ->
-
-CollapseDetector = (grid, shuttles, shuttleStates, shuttleGrid) ->
-  # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
-  # I split it out of ShuttleGrid for modularity's sake.
- 
-  # Delete the shuttle when the base grid changes around it
-  grid.beforeWatch.forward (x, y, oldv, v) ->
-    # We only care if a cell that was previously passable became inpassable.
-    oldPassable = letsShuttleThrough(oldv)
-    newPassable = letsShuttleThrough(v)
-
-    if !oldPassable and newPassable
-      # We need to delete any states which are not valid so they can get regenerated
-      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
-        shuttleStates.delete state if !state.valid
-        
-    else if oldPassable and !newPassable
-      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
-        shuttle = state.shuttle
-
-        # So, two strategies for dealing with this.
-        if shuttle.currentState is state
-          # Option 1: If the base was edited underneath the current state, game
-          # over. Just bake the shuttle back onto the buffer in its current state
-          # and let nature take its course.
-          shuttles.delete shuttle, state
-        else
-          # Option 2: If the state isn't the current state, some set of the shuttle
-          # states might no longer be reachable. I'll delete all states which
-          # aren't the current state.
-          shuttleStates.collapse shuttle
-
 
 FillKeys = (grid, shuttleStates, shuttleGrid) ->
   # The fill key is used for cell groups. Every adjacent grid cell with the
@@ -1129,6 +1097,51 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   getImmediate: (shuttle) ->
     patch.get(shuttle) || shuttle.currentState
 
+CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) ->
+  # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
+  # I split it out of ShuttleGrid for modularity's sake.
+ 
+  # Delete the shuttle when the base grid changes around it
+  grid.beforeWatch.forward (x, y, oldv, v) ->
+    # We only care if a cell that was previously passable became inpassable.
+    oldPassable = letsShuttleThrough(oldv)
+    newPassable = letsShuttleThrough(v)
+
+    if !oldPassable and newPassable
+      # We need to delete any states which are not valid so they can get regenerated
+      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
+        shuttleStates.delete state if !state.valid
+        
+    else if oldPassable and !newPassable
+      shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
+        shuttle = state.shuttle
+
+        # So, two strategies for dealing with this.
+        if shuttle.currentState is state
+          # Option 1: If the base was edited underneath the current state, game
+          # over. Just bake the shuttle back onto the buffer in its current state
+          # and let nature take its course.
+          shuttles.delete shuttle, state
+        else
+          # Option 2: If the state isn't the current state, some set of the shuttle
+          # states might no longer be reachable. I'll delete all states which
+          # aren't the current state.
+          shuttleStates.collapse shuttle
+
+  shuttleBuffer.watch.on (x, y, v) ->
+    # I don't care about collapsing shuttles in the path or anything - the
+    # normal overlap / adjacency detection code will take care of that.
+    shuttle = shuttleGrid.get x, y
+    if shuttle
+      shuttles.delete shuttle, shuttle.currentState
+    else if v
+      for {dx, dy} in DIRS
+        if (shuttle = shuttleGrid.get x+dx, y+dy)
+          shuttles.delete shuttle, shuttle.currentState
+
+
+
+
 
 Zones = (shuttles, regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
@@ -1391,14 +1404,13 @@ module.exports = Jit = (rawGrid) ->
   regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
   zones = Zones shuttles, regions, currentStates
+  CollapseDetector grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
   dirtyShuttles = DirtyShuttles shuttles, shuttleStates, currentStates, zones
 
   shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
   #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
-
-  CollapseDetector grid, shuttles, shuttleStates, shuttleGrid
 
   modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
@@ -1410,14 +1422,6 @@ module.exports = Jit = (rawGrid) ->
     if v in ['shuttle', 'thinshuttle']
       if !letsShuttleThrough grid.get x, y
         grid.set x, y, 'nothing'
-
-      # + of death. This should probably get moved somewhere else - like
-      # ShuttleGrid or maybe its own thing or something.
-      if (s = shuttleGrid.get x, y)
-        shuttles.delete s, s.currentState
-      for {dx,dy} in DIRS
-        if (s = shuttleGrid.get x+dx, y+dy)
-          shuttles.delete s, s.currentState
 
       shuttleBuffer.set x, y, v
     else
