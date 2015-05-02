@@ -134,10 +134,10 @@ BlobFiller = (type, buffer, grid) ->
 
   # Shuttles and engines get destroyed using ShuttleGrid and EngineGrid
   # respectively - which call .delete()
-  deleteBlob = (b, dx, dy) ->
+  deleteBlob = (b, pos) ->
     return no unless blobs.delete b
 
-    assert dx?
+    assert !pos || pos.dx?
 
     #console.trace "deleteBlob #{dx},#{dy}"
 
@@ -145,6 +145,10 @@ BlobFiller = (type, buffer, grid) ->
     assert b.used
     b.used = no
     # Put the points we ate back in the buffer.
+    if pos
+      {dx, dy} = pos
+    else
+      dx = dy = 0
     b.points.forEach (x2, y2, v) ->
       # Bypassing ShuttleBuffer's watch function. Is this correct..?
       buffer.data.set x2+dx, y2+dy, v
@@ -249,13 +253,13 @@ EngineGrid = (grid, engines) ->
   grid.beforeWatch.forward (x, y, oldv, v) ->
     if oldv in ['positive', 'negative'] and (e = engineGrid.get x, y)
       #log 'deleting engine at', x, y, e
-      engines.delete e, 0, 0
+      engines.delete e
 
     # Engines really don't care about anything else.
     if v in ['positive', 'negative']
       # Reap adjacent cells. This might be special for shuttles?
       for {dx, dy} in DIRS when (e = engineGrid.get x+dx, y+dy)
-        engines.delete e, 0, 0
+        engines.delete e
 
   engines.addWatch.forward (engine) ->
     engine.points.forEach (x, y, v) ->
@@ -1265,9 +1269,9 @@ ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
         # Oof. collapse.
         #log 'ccccc', shuttle1.id, shuttle2.id
         #log 'ccccc', state1, state2
-        shuttles.delete shuttle1, state1.dx, state1.dy if shuttle1.used
+        shuttles.delete shuttle1, state1 if shuttle1.used
         assert shuttle2.used
-        shuttles.delete shuttle2, state2.dx, state2.dy
+        shuttles.delete shuttle2, state2
 
     #log '<----- csw'
 
@@ -1301,9 +1305,11 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 
-
-
-collapseWhenBaseChanged = (grid, shuttles, shuttleGrid) ->
+CollapseDetector = (grid, shuttles, shuttleGrid) ->
+  # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
+  # I split it out of ShuttleGrid for modularity's sake.
+ 
+  # Delete the shuttle when the base grid changes around it
   grid.beforeWatch.forward (x, y, oldv, v) ->
     shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
       shuttle = state.shuttle
@@ -1315,7 +1321,7 @@ collapseWhenBaseChanged = (grid, shuttles, shuttleGrid) ->
       #
       # .. Think about removing all the other shuttle states instead of burning
       # it back into the grid.
-      shuttles.delete shuttle, state.dx, state.dy
+      shuttles.delete shuttle, state
 
 
 
@@ -1348,9 +1354,13 @@ module.exports = Jit = (rawGrid) ->
   #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
-  collapseWhenBaseChanged grid, shuttles, shuttleGrid
+  CollapseDetector grid, shuttles, shuttleGrid
 
-  modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce, groupConnections, regions, currentStates, zones, dirtyShuttles, shuttleAdjacency, shuttleOverlap}
+  modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
+    shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
+    groupConnections, regions, currentStates, zones, dirtyShuttles,
+    shuttleAdjacency, shuttleOverlap}
+
 
   set = (x, y, v) ->
     if v in ['shuttle', 'thinshuttle']
@@ -1360,10 +1370,10 @@ module.exports = Jit = (rawGrid) ->
       # + of death. This should probably get moved somewhere else - like
       # ShuttleGrid or maybe its own thing or something.
       if (s = shuttleGrid.get x, y)
-        shuttles.delete s, s.currentState.dx, s.currentState.dy
+        shuttles.delete s, s.currentState
       for {dx,dy} in DIRS
         if (s = shuttleGrid.get x+dx, y+dy)
-          shuttles.delete s, s.currentState.dx, s.currentState.dy
+          shuttles.delete s, s.currentState
 
       shuttleBuffer.set x, y, v
     else
