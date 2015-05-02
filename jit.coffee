@@ -26,7 +26,7 @@ randomWeighted = (arr) ->
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
-#log.quiet = yes
+log.quiet = yes
 
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
@@ -49,6 +49,7 @@ BaseGrid = ->
   afterWatch: afterWatch
   get: grid.get.bind grid
   set: (x, y, v) ->
+    assert !v? or typeof v is 'string'
     v = undefined if v is null
     assert v not in ['shuttle', 'thinshuttle']
     oldv = grid.get x, y
@@ -428,6 +429,13 @@ ShuttleGrid = (shuttleStates) ->
       if state.shuttle.currentState is state
         shuttle = state.shuttle
     return shuttle
+
+  getValue: (x, y) ->
+    # Get the grid cell value at x, y. This is a lot of work - if you want to
+    # draw a lot of shuttles or something, don't use this.
+    return unless shuttle = @get x, y
+    {dx, dy} = shuttle.currentState
+    return shuttle.points.get x-dx, y-dy
 
   check: ->
 
@@ -1342,12 +1350,15 @@ module.exports = Jit = (rawGrid) ->
 
   collapseWhenBaseChanged grid, shuttles, shuttleGrid
 
+  modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce, groupConnections, regions, currentStates, zones, dirtyShuttles, shuttleAdjacency, shuttleOverlap}
+
   set = (x, y, v) ->
     if v in ['shuttle', 'thinshuttle']
       if !letsShuttleThrough grid.get x, y
         grid.set x, y, 'nothing'
 
-      # + of death. This should probably get moved somewhere else.
+      # + of death. This should probably get moved somewhere else - like
+      # ShuttleGrid or maybe its own thing or something.
       if (s = shuttleGrid.get x, y)
         shuttles.delete s, s.currentState.dx, s.currentState.dy
       for {dx,dy} in DIRS
@@ -1356,32 +1367,30 @@ module.exports = Jit = (rawGrid) ->
 
       shuttleBuffer.set x, y, v
     else
+      #assert !v? or typeof v is 'string'
+      return unless !v? or typeof v is 'string'
       grid.set x, y, v
       shuttleBuffer.set x, y, null
 
-  for k, v of rawGrid when k not in ['tw', 'th']
-    {x,y} = parseXY k
-    set x, y, v
+  setGrid = (rawGrid) ->
+    # Probably should delete everything here too. Eh...
+    if rawGrid.base
+      console.log 'Loading from new style data'
+      for layer in [rawGrid.base, rawGrid.shuttles]
+        for k, v of layer
+          {x,y} = parseXY k
+          set x, y, v
+    else
+      console.log 'Loading from old style data'
+      for k, v of rawGrid
+        {x,y} = parseXY k
+        set x, y, v
+    return
 
+  setGrid rawGrid
 
   grid: grid
-  groups: groups
-  shuttles: shuttles
-  engines: engines
-  zones: zones
-  modules: {
-    grid
-    stepWatch
-    engines
-    engineGrid
-    shuttles
-    shuttleStates
-    shuttleGrid
-    groups
-    regions
-    currentStates
-    zones
-  }
+  modules: modules
 
   step: ->
     log '------------ STEP ------------'
@@ -1499,12 +1508,7 @@ module.exports = Jit = (rawGrid) ->
 
 
   checkEmpty: ->
-    groups.checkEmpty()
-    groupConnections.checkEmpty()
-    fillKeys.checkEmpty()
-    regions.checkEmpty()
-    zones.checkEmpty()
-    shuttleAdjacency.checkEmpty()
+    m.checkEmpty?() for k, m of modules
 
   printGrid: ->
     overlay = new Map2
@@ -1520,13 +1524,22 @@ module.exports = Jit = (rawGrid) ->
       overlay.get(x, y) or grid.get x, y
 
   toJSON: ->
-    json = {}
+    # Unfortunately, the old format won't work anymore. It can't handle the
+    # shuttle layer.
+    json =
+      base: {}
+      shuttles: {}
+
     grid.forEach (x, y, v) ->
-      json["#{x},#{y}"] = v if v?
+      assert typeof v is 'string'
+      json.base["#{x},#{y}"] = v if v?
+
     shuttles.forEach (s) ->
       {dx, dy} = state = s.currentState
       s.points.forEach (x, y, v) ->
-        json["#{x+dx},#{y+dy}"] = v
+        json.shuttles["#{x+dx},#{y+dy}"] = v
+
+    #console.log json
     json
 
   set: set
