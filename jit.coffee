@@ -28,6 +28,8 @@ letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
 log.quiet = yes
 
+abs = (x) -> if x >= 0 then x else -x
+
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
   # whatever is underneath shuttles.
@@ -1441,8 +1443,69 @@ module.exports = Jit = (rawGrid) ->
 
   setGrid rawGrid
 
-  grid: grid
-  modules: modules
+
+  # ------ Step stuff ------
+
+  calcImpulse = (f, deps) ->
+    impulse = 0
+
+    f.forEach (mult, group) ->
+      log 'calculating pressure in group', group
+      assert group.used
+      zone = zones.getZoneForGroup group
+      # Zone is null if the group is filled. But the group should never be
+      # filled, because if it was this shuttle would have glommed on to
+      # another shuttle anyway.
+      #return if zone is null
+      assert zone.used
+      log 'pressure', zone.pressure
+      deps.add zone
+
+      impulse -= mult * zone.pressure
+    
+    return impulse
+
+  tryMove = (shuttle, state, impulse, isTop) ->
+    return unless impulse
+
+    dir = if impulse < 0
+      impulse = -impulse
+      if isTop then UP else LEFT
+    else
+      if isTop then DOWN else RIGHT
+
+    moved = no
+    while impulse
+      log 'impulse', impulse, 'dir', dir
+      # We can't move any further in this direction.
+      break unless (next = shuttleStates.getStateNear state, dir)
+
+      # This shuttle is about to collide into another shuttle. ABORT!
+      if shuttleOverlap.willOverlap shuttle, next
+        # We'll treat a shuttle colliding with another shuttle as a successful
+        # move. Remember, the shuttle won't start colliding with anything, so
+        # if we hit this state either
+        # - we actually did move here
+        # or
+        # - The other shuttle moved in our way, in which case its already moved
+        # and we'll glom onto it at the end of the frame.
+        #
+        # This world you can see the difference:
+        # ;;;;;;;
+        # ; S   N
+        # ;  S  ;
+        # ;;;P;;;
+        #
+        # return state -> shuttle 2 doesn't move, and they glom together.
+        # break -> both shuttles move right.
+        return state
+
+      state = next
+      moved = yes
+      impulse--
+      
+    # Return the new state.
+    return if moved then state else null
 
   step: ->
     log '------------ STEP ------------'
@@ -1461,80 +1524,55 @@ module.exports = Jit = (rawGrid) ->
       assert shuttle.used
       state = shuttle.currentState
       force = stateForce.get state
+      {x:fx, y:fy} = force
 
       # Set of zones which, when deleted, will make the shuttle dirty again.
       # This is only used if the shuttle doesn't move. So its kinda gross that
       # we have to allocate an object here - but .. eh.
       deps = new Set
 
-      # Y first.
-      #log 'shuttle force', force
-      for d in ['y', 'x'] when (f = force[d])
-        assert force.used # If this is a problem, just get it again.
-        impulse = 0
-
-        f.forEach (mult, group) ->
-          log 'calculating pressure in group', group
-          assert group.used
-          zone = zones.getZoneForGroup group
-          # Zone is null if the group is filled. But the group should never be
-          # filled, because if it was this shuttle would have glommed on to
-          # another shuttle anyway.
-          #return if zone is null
-          assert zone.used
-          log 'pressure', zone.pressure
-          deps.add zone
-
-          impulse -= mult * zone.pressure
-        
-        log 'd', d, 'impulse', impulse
-        continue unless impulse
-
-        dir = if impulse < 0
-          impulse = -impulse
-          if d is 'y' then UP else LEFT
+      # If we *might* move in both X and Y directions, we'll calculate them
+      # both, then pick the stronger force and preferentially move in that
+      # direction.
+      if fx and fy
+        xImpulse = calcImpulse fx, deps
+        yImpulse = calcImpulse fy, deps
+        if abs(yImpulse) >= abs(xImpulse)
+          next = tryMove shuttle, state, yImpulse, yes
+          next = tryMove shuttle, state, xImpulse, no if !next
         else
-          if d is 'y' then DOWN else RIGHT
+          next = tryMove shuttle, state, xImpulse, no
+          next = tryMove shuttle, state, yImpulse, yes if !next
+      else if (f = fx)
+        xImpulse = calcImpulse f, deps
+        next = tryMove shuttle, state, xImpulse, no
+      else if (f = fy)
+        yImpulse = calcImpulse f, deps
+        next = tryMove shuttle, state, yImpulse, yes
 
-        moved = no
-        while impulse
-          log 'impulse', impulse, 'dir', dir
-          # We can't move any further in this direction.
-          break unless (next = shuttleStates.getStateNear state, dir)
+      if next
+        log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
+        currentStates.set shuttle, next
+        # The shuttle is still dirty - so we're kinda done here.
+      else
+        # Since nothing changed, nothing should have invalidated the force.
+        assert force.used
 
-          # This shuttle is about to collide into another shuttle. ABORT!
-          if shuttleOverlap.willOverlap shuttle, next
-            # Very important. Because getStateNear above might have resulted in
-            # some groups being deleted, the state we're iterating through with
-            # (y,x) might now be invalid.
-            #
-            # Its important that we don't try and move the other way now that a
-            # collision has nearly happened. The other solution to this is to
-            # call stateForce.get() again each time through the loop.
-            moved = yes
-            break
+        # The shuttle didn't move.
+        log '----> shuttle did not move', shuttle.id, deps
+        dirtyShuttles.setCleanDeps shuttle, deps
+        #log 'deps', deps
 
-          state = next
-          moved = yes
-          impulse--
-          
-        if moved
-          log 'shuttle', shuttle.id, 'moved to', state.dx, state.dy
-          currentStates.set shuttle, state
-          # The shuttle is still dirty - so we're kinda done here.
-          return
-
-      # The shuttle didn't move.
-      dirtyShuttles.setCleanDeps shuttle, deps
-      log '----> shuttle did not move', shuttle, deps
-      #log 'deps', deps
-            
     # Tell everyone about how the current states changed. This will destroy any
     # zones for the next step() call.
     stepWatch.signal 'after'
 
     #@printGrid()
     @check()
+
+
+  grid: grid
+  modules: modules
 
   moveShuttle: (shuttle, state) ->
     # Try to move the named shuttle to the specified state immediately. This
