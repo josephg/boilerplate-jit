@@ -1541,7 +1541,16 @@ module.exports = Jit = (rawGrid) ->
     stepWatch.signal 'before'
     shuttles.flush()
 
-    dirtyShuttles.forEach (shuttle) ->
+    # These could be preallocated...
+    #
+    # I wanted to call this 'shuttles' or 'dirtyShuttles' but that interfered
+    # with the module above. Ugh.
+    shuttlesToMove = []
+    dependancies = []
+    impulse = []
+
+    # Step 1: Calculate the impulse on all shuttles.
+    shuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle
 
       return if shuttle.held # Manually set from the UI.
@@ -1551,43 +1560,44 @@ module.exports = Jit = (rawGrid) ->
        
       # Consider moving the shuttle.
       assert shuttle.used
-      state = shuttle.currentState
-      force = stateForce.get state
+      force = stateForce.get shuttle.currentState
       {x:fx, y:fy} = force
 
       # Set of zones which, when deleted, will make the shuttle dirty again.
       # This is only used if the shuttle doesn't move. So its kinda gross that
       # we have to allocate an object here - but .. eh.
-      deps = new Set
 
+      shuttlesToMove.push shuttle
+      # Allocating a bunch of these here might turn out to be expensive.
+      dependancies.push deps = new Set
+      impulse.push if fx then calcImpulse fx, deps else 0
+      impulse.push if fy then calcImpulse fy, deps else 0
+
+    # Step 2: Try and move all the shuttles. The order here can introduce
+    # nondeterminism, but its not super important.
+    for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
       # both, then pick the stronger force and preferentially move in that
       # direction.
-      if fx and fy
-        xImpulse = calcImpulse fx, deps
-        yImpulse = calcImpulse fy, deps
-        if abs(yImpulse) >= abs(xImpulse)
-          next = tryMove shuttle, state, yImpulse, yes
-          next = tryMove shuttle, state, xImpulse, no if !next
-        else
-          next = tryMove shuttle, state, xImpulse, no
-          next = tryMove shuttle, state, yImpulse, yes if !next
-      else if (f = fx)
-        xImpulse = calcImpulse f, deps
-        next = tryMove shuttle, state, xImpulse, no
-      else if (f = fy)
-        yImpulse = calcImpulse f, deps
+      xImpulse = impulse[i*2]
+      yImpulse = impulse[i*2+1]
+
+      state = shuttle.currentState
+
+      if abs(yImpulse) >= abs(xImpulse)
         next = tryMove shuttle, state, yImpulse, yes
+        next = tryMove shuttle, state, xImpulse, no if !next
+      else
+        next = tryMove shuttle, state, xImpulse, no
+        next = tryMove shuttle, state, yImpulse, yes if !next
 
       if next
         log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
         currentStates.set shuttle, next
         # The shuttle is still dirty - so we're kinda done here.
       else
-        # Since nothing changed, nothing should have invalidated the force.
-        assert force.used
-
         # The shuttle didn't move.
+        deps = dependancies[i]
         log '----> shuttle did not move', shuttle.id, deps
         dirtyShuttles.setCleanDeps shuttle, deps
         #log 'deps', deps
