@@ -442,7 +442,9 @@ ShuttleGrid = (shuttleStates) ->
   stateGrid: stateGrid
   stateWatch: stateWatch
 
-  get: (x, y) ->
+  getStates: (x, y) -> stateGrid.get(x, y)
+
+  getShuttle: (x, y) ->
     # Get the shuttle currently at (x, y)
     shuttle = null
     stateGrid.get(x, y)?.forEach (state) ->
@@ -453,7 +455,7 @@ ShuttleGrid = (shuttleStates) ->
   getValue: (x, y) ->
     # Get the grid cell value at x, y. This is a lot of work - if you want to
     # draw a lot of shuttles or something, don't use this.
-    return unless shuttle = @get x, y
+    return unless shuttle = @getShuttle x, y
     {dx, dy} = shuttle.currentState
     return shuttle.points.get x-dx, y-dy
 
@@ -734,14 +736,16 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     assert.equal 0, groupGrid.size
     assert.equal 0, pendingCells.size
 
-StateForce = (shuttleStates, groups) ->
+StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
   # For each shuttle state, we need to know which groups apply a force.
   stateForce = new Map # state -> force.
   stateForce.default = (state) -> makeForce state
 
   stateForGroup = new Map # group -> set of states
   stateForGroup.default = -> new Set
-  
+
+  watch = new Watcher
+
   # This could be eager or lazy. If we're eager there's a potential race
   # condition: a new state is created, the fillgrid invalidates some groups
   # then we look at those groups to determine who applies force. If we look at
@@ -756,6 +760,18 @@ StateForce = (shuttleStates, groups) ->
       for {dx, dy} in DIRS
         state = states.get state0.dx+dx, state0.dy+dy
         deleteForce state if state
+
+  grid.afterWatch.on (x, y, oldv, v) ->
+    # Forces depend on the groups nearby. When the nearby groups are GCed,
+    # thats fine - we'll destroy the force. But sometimes there is no group
+    # next to the shuttle. When a new cell is added there, we need to
+    # recalculate the force to add the group.
+    #
+    # This is only important for filled cells at the moment - but that may
+    # change.
+    if util.cellMax(oldv) is 0 then for {dx, dy} in DIRS
+      states = shuttleGrid.getStates x+dx, y+dy
+      states?.forEach deleteForce
 
   groups.watch.on (group) ->
     #log.quiet = no if group._id is 60114
@@ -781,6 +797,8 @@ StateForce = (shuttleStates, groups) ->
 
       force.x?.forEach delGroups
       force.y?.forEach delGroups
+
+      watch.signal state, force
 
   makeForce = (state) ->
     log 'makeForce', state
@@ -831,6 +849,7 @@ StateForce = (shuttleStates, groups) ->
     #log '-> makeForce', force
     force
 
+  watch: watch
   get: (state) ->
     f = stateForce.getDef state
     assert f.used
@@ -1127,12 +1146,12 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
   shuttleBuffer.watch.on (x, y, v) ->
     # I don't care about collapsing shuttles in the path or anything - the
     # normal overlap / adjacency detection code will take care of that.
-    shuttle = shuttleGrid.get x, y
+    shuttle = shuttleGrid.getShuttle x, y
     if shuttle
       shuttles.delete shuttle, shuttle.currentState
     else if v
       for {dx, dy} in DIRS
-        if (shuttle = shuttleGrid.get x+dx, y+dy)
+        if (shuttle = shuttleGrid.getShuttle x+dx, y+dy)
           shuttles.delete shuttle, shuttle.currentState
 
 
@@ -1242,7 +1261,7 @@ Zones = (shuttles, regions, currentStates) ->
     assert.equal 0, zoneForRegion.size
 
 
-DirtyShuttles = (shuttles, shuttleStates, currentStates, zones) ->
+DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   # This keeps track of shuttles which might move on the next step. This includes
   # any shuttle which just moved, shuttles next to a zone which was
   # just destroyed.
@@ -1273,6 +1292,10 @@ DirtyShuttles = (shuttles, shuttleStates, currentStates, zones) ->
       set.forEach (s) -> setDirty s
       shuttlesForZone.delete z
 
+  stateForce.watch.on (state) ->
+    # The force on the shuttle was changed in some way.
+    setDirty state.shuttle
+
   # The state changed. Make that sucker dirty.
   currentStates.watch.on (shuttle) ->
     setDirty shuttle
@@ -1282,6 +1305,7 @@ DirtyShuttles = (shuttles, shuttleStates, currentStates, zones) ->
     setDirty state.shuttle
 
   setDirty = (shuttle) ->
+    log 'dirty shuttle', shuttle
     dirty.add shuttle
 
     if (deps = shuttleZoneDeps.get shuttle)
@@ -1305,6 +1329,8 @@ DirtyShuttles = (shuttles, shuttleStates, currentStates, zones) ->
 ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
   # Pairs of states in different shuttles that will be touching
   adjacentStates = new SetOfPairs
+
+  watch = new Watcher
 
   shuttleStates.addWatch.forward (state1) ->
     return unless state1.valid
@@ -1343,8 +1369,11 @@ ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
         shuttles.delete shuttle1, state1 if shuttle1.used
         assert shuttle2.used
         shuttles.delete shuttle2, state2
+        watch.signal state1, state2
 
     #log '<----- csw'
+
+  watch: watch
 
   checkEmpty: ->
     assert.equal 0, adjacentStates.size
@@ -1395,13 +1424,13 @@ module.exports = Jit = (rawGrid) ->
   shuttleGrid = ShuttleGrid shuttleStates
   fillKeys = FillKeys grid, shuttleStates, shuttleGrid
   groups = Groups grid, engines, engineGrid, shuttleGrid, fillKeys
-  stateForce = StateForce shuttleStates, groups
+  stateForce = StateForce grid, shuttleStates, shuttleGrid, groups
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
   zones = Zones shuttles, regions, currentStates
   CollapseDetector grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
-  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, currentStates, zones
+  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
   shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
@@ -1429,7 +1458,7 @@ module.exports = Jit = (rawGrid) ->
   setGrid = (rawGrid) ->
     # Probably should delete everything here too. Eh...
     if rawGrid.base
-      console.log 'Loading from new style data'
+      #console.log 'Loading from new style data'
       for layer in [rawGrid.base, rawGrid.shuttles]
         for k, v of layer
           {x,y} = parseXY k
