@@ -1,20 +1,6 @@
 {inspect} = require 'util'
 assert = require 'assert'
-
-# Monkey patch inspect functions for Map and Set
-Map::inspect ?= (depth, options) ->
-  return '[Map]' if depth < 0
-  return '{[Map]}' if @size is 0
-  entries = []
-  @forEach (v, k) -> entries.push "#{inspect k, options} : #{inspect v, options}"
-  "{[Map] #{entries.join ', '} }"
-
-Set::inspect ?= (depth, options) ->
-  return '[Set]' if depth < 0
-  return '{[Set]}' if @size is 0
-  entries = []
-  @forEach (v) -> entries.push "#{inspect v, options}"
-  "{[Set] #{entries.join ', '} }"
+exports.Set2 = Set2 = require 'set2'
 
 Map::getDef = WeakMap::getDef = (k) ->
   v = @get k
@@ -29,68 +15,26 @@ Set::map = (fn) ->
     result.add fn(x)
   result
 
-exports.Map2 = class Map2 # A map from (a,b) -> c instead of just a->c
+exports.Map2 = class Map2 extends require 'map2'
   constructor: (data) ->
-    @map = new Map
-    @size = 0
     if typeof data is 'function'
       @makeDefault = data
-    else if data
-      for [k1, k2, v] in data
-        @set k1, k2, v
+      super()
+    else
+      super data
 
-  get: (k1, k2) ->
-    inner = @map.get k1
-    return inner.get k2 if inner
-
+  # Get default value
   getDef: (k1, k2) ->
     v = @get k1, k2
     if !v? and @makeDefault
       @set k1, k2, v = @makeDefault k1, k2
     v
 
-  has: (k1, k2) ->
-    inner = @map.get k1
-    return inner?.has(k2) or false
-
-  set: (k1, k2, v) ->
-    inner = @map.get k1
-    if !inner
-      inner = new Map
-      @map.set k1, inner
-
-    @size -= inner.size
-    inner.set k2, v
-    @size += inner.size
-    return this
-
-  delete: (k1, k2) ->
-    inner = @map.get k1
-    if inner
-      deleted = inner.delete k2
-      @size-- if deleted
-      return deleted
-    else
-      return no
-
+  # This code is all written assuming forEach returns arguments in the sensible order
   forEach: (fn) ->
-    @map.forEach (inner, k1) ->
-      inner.forEach (v, k2) ->
-        fn k1, k2, v
+    super (v, k1, k2) -> fn k1, k2, v
 
-  clear: -> @map.clear()
-
-  inspect: (depth, options) ->
-    return '[Map2]' if depth < 0
-    return '{[Map2]}' if @size is 0
-    entries = []
-    @forEach (k1, k2, v) ->
-      entries.push "(#{inspect k1, options},#{inspect k2, options}) : #{inspect v, options}"
-    assert entries.length == @size
-    "{[Map2] #{entries.join ', '} }"
-
-
-exports.Map3 = class Map3 # A map from (a,b) -> c instead of just a->c
+exports.Map3 = class Map3 # A map from (a,b,c) -> d instead of just a->d
   constructor: (data) ->
     @map = new Map
     @size = 0
@@ -156,74 +100,6 @@ exports.Map3 = class Map3 # A map from (a,b) -> c instead of just a->c
     assert entries.length == @size
     "{[Map3] #{entries.join ', '} }"
 
-
-
-exports.Set2 = class Set2 # A set of (a,b) values
-  constructor: (data) ->
-    @map = new Map
-    @size = 0
-    if data
-      for [v1, v2] in data
-        @add v1, v2
-
-  subset: (v1) -> @map.get v1
-
-  has: (v1, v2) ->
-    inner = @map.get v1
-    return inner?.has(v2) or false
-
-  add: (v1, v2) ->
-    inner = @map.get v1
-    if !inner
-      inner = new Set
-      @map.set v1, inner
-
-    @size -= inner.size
-    inner.add v2
-    @size += inner.size
-    return this
-
-  delete: (v1, v2) ->
-    inner = @map.get v1
-    return no if !inner
-
-    deleted = inner.delete v2
-    return no if !deleted
-
-    @size--
-    if inner.size is 0
-      @map.delete v1
-    return yes
-
-  deleteAll: (v1) ->
-    console.trace()
-    if (set = @map.get v1)
-      @size -= set.size
-      @map.delete v1
-      return yes
-
-    return no
-
-  forEach: (fn) ->
-    @map.forEach (inner, v1) ->
-      inner.forEach (v2) ->
-        fn v1, v2
-
-  clear: -> @map.clear()
-
-  inspect: (depth, options) ->
-    return '[Set2]' if depth < 0
-    entries = []
-    @forEach (v1, v2) ->
-      entries.push "(#{inspect v1, options},#{inspect v2, options})"
-
-    assert.equal entries.length, @size
-    "{[Set2] #{entries.join ', '} }"
-
-  check: ->
-    size = 0
-    @forEach (x) -> size++
-    assert.equal @size, size
 
 exports.Set3 = class Set3
   constructor: (data) ->
