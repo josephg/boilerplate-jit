@@ -9,7 +9,8 @@ chars =
   thinsolid: 'x'
   shuttle: 'S'
   thinshuttle: 's'
-  bridge: 'b'
+  bridge: 'B'
+  thinbridge: 'b'
 
 UP=0; RIGHT=1; DOWN=2; LEFT=3
 DN =
@@ -63,7 +64,7 @@ cellAt = (grid, x, y, dir) ->
     # still here later.
     when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
       [x, y]
-    when 'bridge'
+    when 'bridge', 'thinbridge'
       [x, y, if dir in [UP, DOWN] then 0 else 1]
     when 'negative', 'positive'
       [x, y, dir]
@@ -73,7 +74,7 @@ cellAt = (grid, x, y, dir) ->
 exports.cellMax = (v) ->
   switch v
     when 'positive', 'negative' then 4
-    when 'bridge' then 2
+    when 'bridge', 'thinbridge' then 2
     when null, undefined then 0
     else 1
 
@@ -81,7 +82,7 @@ connectedCells = exports.connectedCells = (grid, x, y, c) ->
   # Returns a list of cells (list of lists)
   v = grid.get x, y
   dirs = switch v
-    when 'bridge'
+    when 'bridge', 'thinbridge'
       if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
     when 'positive', 'negative'
       [c]
@@ -249,18 +250,29 @@ jsonExtents = (grid) ->
   # calculate the extents
   top = left = bottom = right = null
 
-  for k, v of grid
-    {x,y} = parseXY k
-    left = x if left is null || x < left
-    right = x if right is null || x > right
-    top = y if top is null || y < top
-    bottom = y if bottom is null || y > bottom
+  scan = (g) ->
+    for k, v of g
+      {x,y} = parseXY k
+      left = x if left is null || x < left
+      right = x if right is null || x > right
+      top = y if top is null || y < top
+      bottom = y if bottom is null || y > bottom
+
+  if grid.base
+    scan grid.base
+    scan grid.shuttles
+  else
+    scan grid
 
   {top, left, bottom, right}
 
 exports.printJSONGrid = (grid, stream = process.stdout) ->
   extents = jsonExtents grid
-  printCustomGrid extents, ((x, y) -> grid[[x,y]]), stream
+  fn = if grid.base
+    (x, y) -> grid.shuttles[[x,y]] || grid.base[[x,y]]
+  else
+    (x, y) -> grid[[x,y]]
+  printCustomGrid extents, fn, stream
 
 exports.printGrid = (extents, grid, stream = process.stdout) ->
   printCustomGrid extents, ((x, y) -> grid.get x, y), stream
