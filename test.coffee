@@ -5,6 +5,19 @@ assert = require 'assert'
 
 require('./log').quiet = yes
 
+
+assert.gridEquals = (expected, actual, step) ->
+  try
+    @deepEqual expected, actual
+  catch e
+    console.log "====== EXPECTED ====== (step #{step})"
+    printJSONGrid expected
+    console.log '======  ACTUAL  ======'
+    printJSONGrid actual
+    throw e
+
+
+
 describe 'jit', ->
 
   describe 'from test data', ->
@@ -16,8 +29,8 @@ describe 'jit', ->
 
         initial = JSON.parse lines.shift()
 
-        console.log "===== #{filename} Initial:"
-        printJSONGrid initial
+        #console.log "===== #{filename} Initial:"
+        #printJSONGrid initial
 
         s = new Jit initial
 
@@ -26,12 +39,24 @@ describe 'jit', ->
 
           s.step()
           actual = s.toJSON()
-          try
-            assert.deepEqual expected, actual
-          catch e
-            console.log "====== EXPECTED ====== (step #{i})"
-            printJSONGrid expected
-            console.log '======  ACTUAL  ======'
-            printJSONGrid actual
-            throw e
+          assert.gridEquals expected, actual, i
 
+  describe 'from gendata', ->
+    if !fs.existsSync "#{__dirname}/gendata"
+      console.warn 'Note: Skipping checking previously generated data - data not found. Use gendata to generate'
+      return
+
+    files = fs.readdirSync "#{__dirname}/gendata"
+    for filename in files when filename.match /\.json$/
+      do (filename) -> it filename, ->
+        lines = fs.readFileSync("#{__dirname}/gendata/#{filename}", 'utf8').split '\n'
+
+        for l,i in lines when l
+          {initial, steps} = JSON.parse l
+          jit = new Jit initial
+          for expected in steps
+            jit.step()
+            assert.gridEquals expected, jit.toJSON(), i
+
+  after ->
+    console.log Jit.stats

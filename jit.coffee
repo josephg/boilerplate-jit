@@ -282,7 +282,7 @@ EngineGrid = (grid, engines) ->
       e.points.forEach (x, y, v) ->
         assert.equal engineGrid.get(x, y), e
 
- 
+
 
 ShuttleStates = (grid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
@@ -394,7 +394,7 @@ ShuttleGrid = (shuttleStates) ->
   # with the grid.
   #
   # This is updated eagerly when shuttle states are created.
- 
+
   # Set of states which fill a given grid cell (which is to say, block pressure)
   #
   # This is used for figuring out cell groups.
@@ -539,7 +539,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
   # contain the same regions.
   #
   # This is very similar to shuttles, but instead of flood filling on connected
-  # shuttle cells, we'll connect cells which have the same FillGrid.
+  # shuttle cells, we'll connect cells which have the same FillKey.
 
   # (x, y, cell) -> cell value. This works the same as the buffers for engines
   # and shuttles.
@@ -866,7 +866,7 @@ GroupConnections = (groups) ->
 
   groups.watch.on (group) ->
     #log 'deleting'
-  
+
     # Any groups we've cached which connect to the deleted group will
     # need to be regenerated.
     if (gc = connections.getAll group)
@@ -976,7 +976,7 @@ Regions = (fillKeys, groups, groupConnections) ->
     # Most cells (and hence most groups) have an empty fill key - I should
     # totally be able to short circuit most of this, or just use the group in
     # place of the region or something.
- 
+
     util.fillGraph group0, (group, hmm) =>
       # There's three reasons we won't connect a region across group lines:
       # 1. We don't connect (in which case this won't be called)
@@ -1000,7 +1000,7 @@ Regions = (fillKeys, groups, groupConnections) ->
       group.engines.forEach (e) => @engines.add e
 
       groupConnections.get(group)?.forEach hmm
-      
+
     assert @size
     regions.add this
     log @_id, ': Made region with groups', @groups.map((g) -> {id:g._id, points:g.points})
@@ -1035,7 +1035,7 @@ Regions = (fillKeys, groups, groupConnections) ->
   #dependancies: (group) -> regionsForGroup.getDef(group).shuttles
 
   watch: watch
-  
+
   get: (group, shuttleStateMap) ->
     # The existance of this function taking in shuttleStateMap is the only
     # reason we maintain the state map. ... .... :/
@@ -1102,7 +1102,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
         currentStates.set shuttle, state
         watch.signal shuttle, prev, state
       patch.clear()
- 
+
   map: currentStates
   watch: watch
 
@@ -1115,7 +1115,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
 CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) ->
   # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
   # I split it out of ShuttleGrid for modularity's sake.
- 
+
   # Delete the shuttle when the base grid changes around it
   grid.beforeWatch.forward (x, y, oldv, v) ->
     # We only care if a cell that was previously passable became inpassable.
@@ -1126,7 +1126,7 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
       # We need to delete any states which are not valid so they can get regenerated
       shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
         shuttleStates.delete state if !state.valid
-        
+
     else if oldPassable and !newPassable
       shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
         shuttle = state.shuttle
@@ -1188,7 +1188,7 @@ Zones = (shuttles, regions, currentStates) ->
     z.used = false
     zones.delete z
     #log 'deleted zone', z
-    #zoneForRegion.delete 
+    #zoneForRegion.delete
     z._debug_regions.forEach (r) ->
       log '-> with region', r._id
       zoneForRegion.delete r
@@ -1225,7 +1225,7 @@ Zones = (shuttles, regions, currentStates) ->
           assert e.used
           engines.add e
           zone.pressure += e.pressure
-      
+
       # And recurse.
       r.edges.forEach (group) ->
         assert group.used
@@ -1257,8 +1257,8 @@ Zones = (shuttles, regions, currentStates) ->
     return if r is null then null else @getZoneForRegion r
 
   checkEmpty: ->
-    assert.equal 0, zones.size
-    assert.equal 0, zoneForRegion.size
+    assert.strictEqual 0, zones.size
+    assert.strictEqual 0, zoneForRegion.size
 
 
 DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
@@ -1285,10 +1285,10 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     dirty.delete s
 
   zones.watch.on (z) ->
-    #log 'zw', z._id
+    log 'zw', z._id
     # A zone was deleted. Set any relevant shuttles to dirty.
     if (set = shuttlesForZone.get z)
-      #log 'zones watch', z._id
+      log 'zones watch', z._id
       set.forEach (s) -> setDirty s
       shuttlesForZone.delete z
 
@@ -1296,7 +1296,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # The force on the shuttle was changed in some way.
     setDirty state.shuttle
 
-  # The state changed. Make that sucker dirty.
+  # The shuttle moved. Make that sucker dirty for the next step too.
   currentStates.watch.on (shuttle) ->
     setDirty shuttle
   shuttleStates.deleteWatch.on (state) ->
@@ -1305,18 +1305,25 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     setDirty state.shuttle
 
   setDirty = (shuttle) ->
-    log 'dirty shuttle', shuttle
-    dirty.add shuttle
+    return if dirty.has shuttle
 
+    log '+ dirty shuttle', shuttle
+    dirty.add shuttle
     if (deps = shuttleZoneDeps.get shuttle)
       # Clear dependancies.
       deps.forEach (z) ->
         shuttlesForZone.get(z).delete shuttle
 
       shuttleZoneDeps.delete shuttle
-      
+
   # The shuttle is clean - but it will become dirty if these zones change.
   setCleanDeps: (shuttle, deps) ->
+    actuallyClean = true
+    deps.forEach (z) ->
+      actuallyClean = false if !z.used
+
+    return if !actuallyClean
+
     # A dirty shuttle didn't move.
     dirty.delete shuttle
 
@@ -1325,6 +1332,15 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     shuttleZoneDeps.set shuttle, deps
 
   forEach: (fn) -> dirty.forEach fn
+
+  check: (invasive) ->
+    # Dirty shuttles aren't listed in shuttle zone deps.
+    dirty.forEach (s) ->
+      assert !shuttleZoneDeps.has s
+
+    # All zones we're listening on should be used
+    shuttlesForZone.forEach (shuttles, zone) ->
+      assert zone.used
 
 ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
   # Pairs of states in different shuttles that will be touching
@@ -1550,14 +1566,15 @@ module.exports = Jit = (rawGrid) ->
     impulse = []
 
     # Step 1: Calculate the impulse on all shuttles.
-    shuttles.forEach (shuttle) ->
+    # shuttles.forEach (shuttle) ->
+    dirtyShuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle
-
+      Jit.stats.checks++
       return if shuttle.held # Manually set from the UI.
 
       # This is all a bit of a hack.
       #return if shuttleGrid.willCombine shuttle
-       
+
       # Consider moving the shuttle.
       assert shuttle.used
       force = stateForce.get shuttle.currentState
@@ -1575,6 +1592,7 @@ module.exports = Jit = (rawGrid) ->
 
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
+    log '--- (step part 2) ---'
     for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
       # both, then pick the stronger force and preferentially move in that
@@ -1594,11 +1612,12 @@ module.exports = Jit = (rawGrid) ->
       if next
         log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
         currentStates.set shuttle, next
+        Jit.stats.moves++
         # The shuttle is still dirty - so we're kinda done here.
       else
         # The shuttle didn't move.
         deps = dependancies[i]
-        log '----> shuttle did not move', shuttle.id, deps
+        log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
         dirtyShuttles.setCleanDeps shuttle, deps
         #log 'deps', deps
 
@@ -1624,13 +1643,15 @@ module.exports = Jit = (rawGrid) ->
     stepWatch.signal 'after'
 
   check: (invasive) ->
-    shuttles.check invasive
-    #engines.check invasive
-    engineGrid.check invasive
-    shuttleGrid.check invasive
-    groups.check invasive
-    groupConnections.check invasive
-    regions.check invasive
+    # shuttles.check invasive
+    # #engines.check invasive
+    # engineGrid.check invasive
+    # shuttleGrid.check invasive
+    # groups.check invasive
+    # groupConnections.check invasive
+    # regions.check invasive
+    # dirtyShuttles.check invasive
+    m.check?(invasive) for k, m of modules
 
     # Each shuttle should be on top of nothing
     shuttles.forEach (shuttle) ->
@@ -1685,6 +1706,9 @@ module.exports = Jit = (rawGrid) ->
 
   set: set
 
+Jit.stats =
+  moves: 0
+  checks: 0
 
 parseFile = exports.parseFile = (filename, opts) ->
   torture =
@@ -1713,9 +1737,9 @@ parseFile = exports.parseFile = (filename, opts) ->
 
     log '-----'
     #jit.grid.set 5, 2, null
-  
+
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
   parseFile filename
-
+  console.log Jit.stats

@@ -3,3 +3,4 @@
 *.map
 npm-debug.log
 node_modules
+gendata
