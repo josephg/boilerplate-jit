@@ -1424,51 +1424,54 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
 
 module.exports = Jit = (rawGrid) ->
-  grid = BaseGrid()
+  baseGrid = BaseGrid()
 
   # This is a watcher which emits events just before & after step().
   stepWatch = new Watcher
 
-  engineBuffer = EngineBuffer grid
-  engines = BlobFiller 'engine', engineBuffer, grid
-  engineGrid = EngineGrid grid, engines
+  engineBuffer = EngineBuffer baseGrid
+  engines = BlobFiller 'engine', engineBuffer, baseGrid
+  engineGrid = EngineGrid baseGrid, engines
 
   shuttleBuffer = ShuttleBuffer()
-  shuttles = BlobFiller 'shuttle', shuttleBuffer, grid
+  shuttles = BlobFiller 'shuttle', shuttleBuffer, baseGrid
 
-  shuttleStates = ShuttleStates grid, shuttles
+  shuttleStates = ShuttleStates baseGrid, shuttles
   shuttleGrid = ShuttleGrid shuttleStates
-  fillKeys = FillKeys grid, shuttleStates, shuttleGrid
-  groups = Groups grid, engines, engineGrid, shuttleGrid, fillKeys
-  stateForce = StateForce grid, shuttleStates, shuttleGrid, groups
+  fillKeys = FillKeys baseGrid, shuttleStates, shuttleGrid
+  groups = Groups baseGrid, engines, engineGrid, shuttleGrid, fillKeys
+  stateForce = StateForce baseGrid, shuttleStates, shuttleGrid, groups
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
   zones = Zones shuttles, regions, currentStates
-  CollapseDetector grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
+  CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
   dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
   shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
-  #shuttleGrid = ShuttleGrid grid, shuttles, shuttleStates, currentStates, stepWatch
+  #shuttleGrid = ShuttleGrid baseGrid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
-  modules = {grid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
+  modules = {baseGrid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
     groupConnections, regions, currentStates, zones, dirtyShuttles,
     shuttleAdjacency, shuttleOverlap}
 
 
+  #components = new Set # Set of child Jit objects.
+
+
   set = (x, y, v) ->
     if v in ['shuttle', 'thinshuttle']
-      if !letsShuttleThrough grid.get x, y
-        grid.set x, y, 'nothing'
+      if !letsShuttleThrough baseGrid.get x, y
+        baseGrid.set x, y, 'nothing'
 
       shuttleBuffer.set x, y, v
     else
       #assert !v? or typeof v is 'string'
       return unless !v? or typeof v is 'string'
-      grid.set x, y, v
+      baseGrid.set x, y, v
       shuttleBuffer.set x, y, null
 
   setGrid = (rawGrid) ->
@@ -1479,6 +1482,10 @@ module.exports = Jit = (rawGrid) ->
         for k, v of layer
           {x,y} = parseXY k
           set x, y, v
+
+      #if rawGrid.modules then for component in rawGrid.modules
+
+
     else
       console.log 'Loading from old style data'
       for k, v of rawGrid
@@ -1507,7 +1514,7 @@ module.exports = Jit = (rawGrid) ->
       deps.add zone
 
       impulse -= mult * zone.pressure
-    
+
     return impulse
 
   tryMove = (shuttle, state, impulse, isTop) ->
@@ -1548,7 +1555,7 @@ module.exports = Jit = (rawGrid) ->
       state = next
       moved = yes
       impulse--
-      
+
     # Return the new state.
     return if moved then state else null
 
@@ -1629,7 +1636,7 @@ module.exports = Jit = (rawGrid) ->
     @check()
 
 
-  grid: grid
+  baseGrid: baseGrid
   modules: modules
 
   moveShuttle: (shuttle, state) ->
@@ -1656,7 +1663,7 @@ module.exports = Jit = (rawGrid) ->
     # Each shuttle should be on top of nothing
     shuttles.forEach (shuttle) ->
       shuttle.eachCurrentPoint (x, y, v) ->
-        baseV = grid.get x, y
+        baseV = baseGrid.get x, y
         assert baseV in ['nothing', 'bridge']
 
     # No two shuttles should be touching to each other and un-merged
@@ -1682,8 +1689,8 @@ module.exports = Jit = (rawGrid) ->
       s.points.forEach (x, y, v) ->
         overlay.set x+dx, y+dy, v
 
-    util.printCustomGrid util.gridExtents(grid), (x, y) ->
-      overlay.get(x, y) or grid.get x, y
+    util.printCustomGrid util.gridExtents(baseGrid), (x, y) ->
+      overlay.get(x, y) or baseGrid.get x, y
 
   toJSON: ->
     # Unfortunately, the old format won't work anymore. It can't handle the
@@ -1692,7 +1699,7 @@ module.exports = Jit = (rawGrid) ->
       base: {}
       shuttles: {}
 
-    grid.forEach (x, y, v) ->
+    baseGrid.forEach (x, y, v) ->
       assert typeof v is 'string'
       json.base["#{x},#{y}"] = v if v?
 
@@ -1705,6 +1712,8 @@ module.exports = Jit = (rawGrid) ->
     json
 
   set: set
+  getBase: baseGrid.get
+  getShuttle: shuttleGrid.getValue.bind shuttleGrid
 
 Jit.stats =
   moves: 0
