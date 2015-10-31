@@ -1572,6 +1572,8 @@ module.exports = Jit = (rawGrid) ->
     dependancies = []
     impulse = []
 
+    somethingMoved = no
+
     # Step 1: Calculate the impulse on all shuttles.
     # shuttles.forEach (shuttle) ->
     dirtyShuttles.forEach (shuttle) ->
@@ -1620,6 +1622,7 @@ module.exports = Jit = (rawGrid) ->
         log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
         currentStates.set shuttle, next
         Jit.stats.moves++
+        somethingMoved = yes
         # The shuttle is still dirty - so we're kinda done here.
       else
         # The shuttle didn't move.
@@ -1634,6 +1637,8 @@ module.exports = Jit = (rawGrid) ->
 
     #@printGrid()
     @check()
+
+    return somethingMoved
 
 
   baseGrid: baseGrid
