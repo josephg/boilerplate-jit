@@ -445,7 +445,7 @@ ShuttleGrid = (shuttleStates) ->
   getStates: (x, y) -> stateGrid.get(x, y)
 
   getShuttle: (x, y) ->
-    # Get the shuttle currently at (x, y)
+    # Get the shuttle currently at (x, y), or null.
     shuttle = null
     stateGrid.get(x, y)?.forEach (state) ->
       if state.shuttle.currentState is state
@@ -455,7 +455,7 @@ ShuttleGrid = (shuttleStates) ->
   getValue: (x, y) ->
     # Get the grid cell value at x, y. This is a lot of work - if you want to
     # draw a lot of shuttles or something, don't use this.
-    return unless shuttle = @getShuttle x, y
+    return unless (shuttle = @getShuttle x, y)
     {dx, dy} = shuttle.currentState
     return shuttle.points.get x-dx, y-dy
 
@@ -1462,8 +1462,10 @@ module.exports = Jit = (rawGrid) ->
   #components = new Set # Set of child Jit objects.
 
 
-  set = (x, y, v) ->
-    if v in ['shuttle', 'thinshuttle']
+  ###
+  set = (layer, x, y, v) ->
+    if layer is 'shuttles'
+    #if v in ['shuttle', 'thinshuttle']
       if !letsShuttleThrough baseGrid.get x, y
         baseGrid.set x, y, 'nothing'
 
@@ -1472,25 +1474,30 @@ module.exports = Jit = (rawGrid) ->
       #assert !v? or typeof v is 'string'
       return unless !v? or typeof v is 'string'
       baseGrid.set x, y, v
-      shuttleBuffer.set x, y, null
+      shuttleBuffer.set x, y, null if !letsShuttleThrough v
+  ###
+
+  set = (x, y, bv, sv) ->
+    baseGrid.set x, y, bv
+    shuttleBuffer.set x, y, sv
 
   setGrid = (rawGrid) ->
     # Probably should delete everything here too. Eh...
     if rawGrid.base
       #console.log 'Loading from new style data'
-      for layer in [rawGrid.base, rawGrid.shuttles]
-        for k, v of layer
-          {x,y} = parseXY k
-          set x, y, v
+      for k, v of rawGrid.base
+        {x,y} = parseXY k
+        set x, y, v, rawGrid.shuttles[k]
 
       #if rawGrid.modules then for component in rawGrid.modules
-
-
     else
       console.log 'Loading from old style data'
       for k, v of rawGrid
         {x,y} = parseXY k
-        set x, y, v
+        if v in ['shuttle', 'thinshuttle']
+          set x, y, 'nothing', v
+        else
+          set x, y, v, null
     return
 
   setGrid rawGrid
@@ -1561,8 +1568,8 @@ module.exports = Jit = (rawGrid) ->
 
   step: ->
     log '------------ STEP ------------'
-    stepWatch.signal 'before'
     shuttles.flush()
+    stepWatch.signal 'before'
 
     # These could be preallocated...
     #
@@ -1571,8 +1578,6 @@ module.exports = Jit = (rawGrid) ->
     shuttlesToMove = []
     dependancies = []
     impulse = []
-
-    somethingMoved = no
 
     # Step 1: Calculate the impulse on all shuttles.
     # shuttles.forEach (shuttle) ->
@@ -1598,6 +1603,9 @@ module.exports = Jit = (rawGrid) ->
       dependancies.push deps = new Set
       impulse.push if fx then calcImpulse fx, deps else 0
       impulse.push if fy then calcImpulse fy, deps else 0
+
+
+    somethingMoved = no
 
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
@@ -1717,8 +1725,14 @@ module.exports = Jit = (rawGrid) ->
     json
 
   set: set
-  getBase: baseGrid.get
-  getShuttle: shuttleGrid.getValue.bind shuttleGrid
+    #assert (layer == 'shuttle') == (v in ['shuttle', 'thinshuttle'])
+    #set x, y, v
+
+  get: (layer, x, y) ->
+    switch layer
+      when 'shuttles' then shuttleGrid.getValue x, y
+      when 'base' then baseGrid.get x, y
+      else throw Error "No such layer #{layer}"
 
 Jit.stats =
   moves: 0
