@@ -1487,6 +1487,7 @@ module.exports = Jit = (rawGrid) ->
       #console.log 'Loading from new style data'
       for k, v of rawGrid.base
         {x,y} = parseXY k
+        v = 'bridge' if v is 'thinbridge'
         set x, y, v, rawGrid.shuttles[k]
 
       #if rawGrid.modules then for component in rawGrid.modules
