@@ -1061,7 +1061,7 @@ Regions = (fillKeys, groups, groupConnections) ->
     assert.equal 0, regions.size
 
 
-CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
+CurrentStates = (shuttles, stateForce, shuttleStates) ->
   # This stores & propogates the shuttle's current states.
   # Current state is now stored on the shuttle (shuttle.currentState)
   # ... but we're also storing it here so we can index using the map in
@@ -1072,6 +1072,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
   # soon as we move them - other shuttles might depend on the zones where they
   # are. We'll hold any changes to the state map until step() is done then send
   # them all.
+  buffering = no
   patch = new Map
 
   watch = new Watcher
@@ -1084,7 +1085,7 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
 
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
-    patch.delete s
+    if buffering then patch.delete s
     currentStates.delete s
     # This is important so in the shuttle collide code we don't double-collide
     # a shuttle (if we just delete it in patch, its currentState will revert
@@ -1092,22 +1093,29 @@ CurrentStates = (shuttles, stateForce, shuttleStates, stepWatch) ->
     s.currentState = null
     # If you care about the current state going away, watch shuttles.deleteWatch.
 
-  stepWatch.on (time) ->
-    if time is 'after'
-      # Call this at the end of step()
-      patch.forEach (state, shuttle) ->
-        log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
-        prev = shuttle.currentState
-        shuttle.currentState = state
-        currentStates.set shuttle, state
-        watch.signal shuttle, prev, state
-      patch.clear()
+  _move = (shuttle, state) ->
+    log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
+    prev = shuttle.currentState
+    shuttle.currentState = state
+    currentStates.set shuttle, state
+    watch.signal shuttle, prev, state
 
   map: currentStates
   watch: watch
 
+  beginTxn: ->
+    buffering = yes
+
+  endTxn: ->
+    patch.forEach (state, shuttle) -> _move shuttle, state
+    patch.clear()
+    buffering = no
+
   set: (shuttle, state) ->
-    patch.set shuttle, state
+    if buffering
+      patch.set shuttle, state
+    else
+      _move shuttle, state
 
   getImmediate: (shuttle) ->
     patch.get(shuttle) || shuttle.currentState
@@ -1426,9 +1434,6 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 module.exports = Jit = (rawGrid) ->
   baseGrid = BaseGrid()
 
-  # This is a watcher which emits events just before & after step().
-  stepWatch = new Watcher
-
   engineBuffer = EngineBuffer baseGrid
   engines = BlobFiller 'engine', engineBuffer, baseGrid
   engineGrid = EngineGrid baseGrid, engines
@@ -1443,7 +1448,7 @@ module.exports = Jit = (rawGrid) ->
   stateForce = StateForce baseGrid, shuttleStates, shuttleGrid, groups
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
-  currentStates = CurrentStates shuttles, stateForce, shuttleStates, stepWatch
+  currentStates = CurrentStates shuttles, stateForce, shuttleStates
   zones = Zones shuttles, regions, currentStates
   CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
   dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
@@ -1453,7 +1458,7 @@ module.exports = Jit = (rawGrid) ->
   #shuttleGrid = ShuttleGrid baseGrid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
-  modules = {baseGrid, stepWatch, engineBuffer, engines, engineGrid, shuttleBuffer,
+  modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
     groupConnections, regions, currentStates, zones, dirtyShuttles,
     shuttleAdjacency, shuttleOverlap}
@@ -1570,7 +1575,6 @@ module.exports = Jit = (rawGrid) ->
   step: ->
     log '------------ STEP ------------'
     shuttles.flush()
-    stepWatch.signal 'before'
 
     # These could be preallocated...
     #
@@ -1611,6 +1615,8 @@ module.exports = Jit = (rawGrid) ->
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
     log '--- (step part 2) ---'
+
+    currentStates.beginTxn()
     for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
       # both, then pick the stronger force and preferentially move in that
@@ -1639,10 +1645,11 @@ module.exports = Jit = (rawGrid) ->
         log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
         dirtyShuttles.setCleanDeps shuttle, deps
         #log 'deps', deps
+    currentStates.endTxn()
 
     # Tell everyone about how the current states changed. This will destroy any
     # zones for the next step() call.
-    stepWatch.signal 'after'
+    # stepWatch.signal 'after'
 
     #@printGrid()
     @check()
@@ -1654,14 +1661,11 @@ module.exports = Jit = (rawGrid) ->
   modules: modules
 
   moveShuttle: (shuttle, state) ->
-    # Try to move the named shuttle to the specified state immediately. This
-    # makes a crappy fake step, and runs the edit there.
+    # Try to move the named shuttle to the specified state immediately.
     #
-    # Never call this while we're in step().
-    stepWatch.signal 'before'
+    # Be careful calling this while we're in step().
     if !shuttleOverlap.willOverlap shuttle, state
       currentStates.set shuttle, state
-    stepWatch.signal 'after'
 
   check: (invasive) ->
     # shuttles.check invasive
@@ -1770,5 +1774,6 @@ parseFile = exports.parseFile = (filename, opts) ->
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
+  log.quiet = no
   parseFile filename
   console.log Jit.stats
