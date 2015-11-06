@@ -4,25 +4,12 @@ Watcher = require './watch'
 {parseXY, fill, DIRS} = util = require './util'
 log = require './log'
 assert = require 'assert'
-mersenne = require 'mersenne'
 
 UP=0; RIGHT=1; DOWN=2; LEFT=3
 
 makeId = do ->
   nextId = 1
   -> nextId++
-
-mersenne.seed 1234
-randomWeighted = (arr) ->
-  totalWeight = 0
-  totalWeight += arr[i+1] for _, i in arr by 2
-  ->
-    r = mersenne.rand() % totalWeight
-    for v,i in arr by 2
-      r -= arr[i+1]
-      break if r < 0
-
-    v
 
 letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
 
