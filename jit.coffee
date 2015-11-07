@@ -1473,25 +1473,7 @@ module.exports = Jit = (rawGrid) ->
     baseGrid.set x, y, bv
     shuttleBuffer.set x, y, sv
 
-  setGrid = (rawGrid) ->
-    # Probably should delete everything here too. Eh...
-    if rawGrid.base
-      #console.log 'Loading from new style data'
-      for k, v of rawGrid.base
-        {x,y} = parseXY k
-        v = 'bridge' if v is 'thinbridge'
-        set x, y, v, rawGrid.shuttles[k]
-
-      #if rawGrid.modules then for component in rawGrid.modules
-    else
-      console.log 'Loading from old style data'
-      for k, v of rawGrid
-        {x,y} = parseXY k
-        if v in ['shuttle', 'thinshuttle']
-          set x, y, 'nothing', v
-        else
-          set x, y, v, null
-    return
+  setGrid = (rawGrid) -> util.deserialize rawGrid, no, set
 
   setGrid rawGrid
 
@@ -1698,8 +1680,6 @@ module.exports = Jit = (rawGrid) ->
       overlay.get(x, y) or baseGrid.get x, y
 
   toJSON: ->
-    # Unfortunately, the old format won't work anymore. It can't handle the
-    # shuttle layer.
     json =
       base: {}
       shuttles: {}

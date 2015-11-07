@@ -43,7 +43,7 @@ exports.fill = (initialX, initialY, f) ->
 
   while explore.length > 0
     x = explore.shift(); y = explore.shift()
-    
+
     if f x, y, hmm
       hmm x+1, y
       hmm x-1, y
@@ -113,7 +113,7 @@ exports.fill3 = (a0, b0, c0, f) ->
 
   while explore.length > 0
     a = explore.shift(); b = explore.shift(); c = explore.shift()
-    
+
     f a, b, c, hmm
 
   return
@@ -277,3 +277,49 @@ exports.printJSONGrid = (grid, stream = process.stdout) ->
 exports.printGrid = (extents, grid, stream = process.stdout) ->
   printCustomGrid extents, ((x, y) -> grid.get x, y), stream
 
+
+# Convert a string back to a bp fragment or grid.
+#
+# setCell is called with (x, y, baseV, shuttleV)
+exports.deserialize = (string, rebase, setCell) ->
+  data = if typeof string is 'string'
+    JSON.parse string
+  else
+    string
+
+  maxx = maxy = -Infinity
+  if rebase
+    if data.tw?
+      minx = miny = 0
+      maxx = data.tw; maxy = data.th
+    else
+      minx = miny = Infinity
+      for k, v of data.base ? data
+        {x,y} = parseXY k
+        minx = x if x < minx; miny = y if y < miny
+        maxx = x if x > maxx; maxy = y if y > maxy
+      # Add a 1 tile border around it.
+      minx--; miny--
+      maxx++; maxy++
+  else
+    minx = miny = 0
+
+  if data.base
+    #console.log 'Loading from new style data'
+    for k, v of data.base
+      {x,y} = parseXY k
+      v = 'bridge' if v is 'thinbridge'
+      setCell x - minx, y - miny, v, data.shuttles[k]
+
+    #if rawGrid.modules then for component in rawGrid.modules
+  else
+    console.log 'Loading from old style data'
+    for k, v of data
+      {x,y} = parseXY k
+      x -= minx; y -= miny
+      if v in ['shuttle', 'thinshuttle']
+        setCell x, y, 'nothing', v
+      else
+        setCell x, y, v, null
+
+  return if rebase then {tw:maxx-minx, th:maxy-miny}

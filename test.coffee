@@ -54,9 +54,17 @@ describe 'jit', ->
         for l,i in lines when l
           {initial, steps} = JSON.parse l
           jit = new Jit initial
-          for expected in steps
+          for expected, k in steps
             jit.step()
-            assert.gridEquals expected, jit.toJSON(), i
+            try
+              assert.gridEquals expected, jit.toJSON(), "#{i}, #{k}"
+            catch e
+              console.log '======================== context:'
+              printJSONGrid initial
+              console.log '-- steps --'
+              printJSONGrid s for s in steps
+              console.log JSON.stringify initial
+              throw e
 
   after ->
     console.log Jit.stats
