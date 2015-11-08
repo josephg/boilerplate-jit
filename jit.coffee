@@ -912,7 +912,8 @@ Regions = (fillKeys, groups, groupConnections) ->
     #shuttles = util.uniqueShuttlesInStates(fillKeys.getFilledStates g.fillKey)
 
   # This is needed for cleanup. Regions are destroyed when an adjacent group is
-  # destroyed so if the group should now connect, we can take that into account.
+  # destroyed so if the group should now connect, we can take that into
+  # account.
   regionsTouchingGroup = new Map
   regionsTouchingGroup.default = -> new Set
 
@@ -1190,7 +1191,7 @@ Zones = (shuttles, regions, currentStates) ->
     watch.signal z
 
   makeZone = (r0) ->
-    # Make a zone starting from the specified group.
+    # Make a zone starting from the specified region.
     zone =
       _id: makeId() # For debugging
       used: true
@@ -1702,7 +1703,9 @@ module.exports = Jit = (rawGrid) ->
 
   get: (layer, x, y) ->
     switch layer
-      when 'shuttles' then shuttleGrid.getValue x, y
+      when 'shuttles'
+        shuttles.flushAt x, y
+        shuttleGrid.getValue x, y
       when 'base' then baseGrid.get x, y
       else throw Error "No such layer #{layer}"
 
