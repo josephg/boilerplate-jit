@@ -281,11 +281,8 @@ exports.printGrid = (extents, grid, stream = process.stdout) ->
 # Convert a string back to a bp fragment or grid.
 #
 # setCell is called with (x, y, baseV, shuttleV)
-exports.deserialize = (string, rebase, setCell) ->
-  data = if typeof string is 'string'
-    JSON.parse string
-  else
-    string
+exports.deserialize = deserialize = (data, rebase, setCell) ->
+  data = JSON.parse data if typeof data is 'string'
 
   maxx = maxy = -Infinity
   if rebase
@@ -300,7 +297,7 @@ exports.deserialize = (string, rebase, setCell) ->
         maxx = x if x > maxx; maxy = y if y > maxy
       # Add a 1 tile border around it.
       minx--; miny--
-      maxx++; maxy++
+      maxx+=2; maxy+=2
   else
     minx = miny = 0
 
@@ -323,3 +320,13 @@ exports.deserialize = (string, rebase, setCell) ->
         setCell x, y, v, null
 
   return if rebase then {tw:maxx-minx, th:maxy-miny}
+
+exports.deserializeRegion = (data) ->
+  selection =
+    base: new Map2
+    shuttles: new Map2
+  {tw, th} = deserialize data, yes, (x, y, bv, sv) =>
+    selection.base.set x, y, bv
+    selection.shuttles.set x, y, sv if sv?
+  selection.tw = tw; selection.th = th
+  return selection
