@@ -1523,17 +1523,22 @@ module.exports = Jit = (rawGrid) ->
     # Return the new state.
     return if moved then state else null
 
+
+  # I wanted to call this 'shuttles' or 'dirtyShuttles' but that interfered
+  # with the module above. Ugh.
+  shuttlesToMove = []
+  dependancies = []
+  impulse = []
+
   step: ->
     log '------------ STEP ------------'
-    shuttles.flush()
+    @calcPressure()
+    @update()
 
-    # These could be preallocated...
-    #
-    # I wanted to call this 'shuttles' or 'dirtyShuttles' but that interfered
-    # with the module above. Ugh.
-    shuttlesToMove = []
-    dependancies = []
-    impulse = []
+  calcPressure: ->
+    log 'step 1) calculating pressure'
+    shuttles.flush()
+    # shuttlesToMove.length = dependancies.length = impulse.length = 0
 
     # Step 1: Calculate the impulse on all shuttles.
     # shuttles.forEach (shuttle) ->
@@ -1541,9 +1546,6 @@ module.exports = Jit = (rawGrid) ->
       log 'step() looking at shuttle', shuttle
       Jit.stats.checks++
       return if shuttle.held # Manually set from the UI.
-
-      # This is all a bit of a hack.
-      #return if shuttleGrid.willCombine shuttle
 
       # Consider moving the shuttle.
       assert shuttle.used
@@ -1553,20 +1555,21 @@ module.exports = Jit = (rawGrid) ->
       # Set of zones which, when deleted, will make the shuttle dirty again.
       # This is only used if the shuttle doesn't move. So its kinda gross that
       # we have to allocate an object here - but .. eh.
-
       shuttlesToMove.push shuttle
+
       # Allocating a bunch of these here might turn out to be expensive.
       dependancies.push deps = new Set
       impulse.push if fx then calcImpulse fx, deps else 0
       impulse.push if fy then calcImpulse fy, deps else 0
 
+    return !!shuttlesToMove.length
 
-    somethingMoved = no
-
+  update: ->
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
-    log '--- (step part 2) ---'
+    log 'step 2) update - moving shuttles'
 
+    somethingMoved = no
     currentStates.beginTxn()
     for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
@@ -1598,13 +1601,9 @@ module.exports = Jit = (rawGrid) ->
         #log 'deps', deps
     currentStates.endTxn()
 
-    # Tell everyone about how the current states changed. This will destroy any
-    # zones for the next step() call.
-    # stepWatch.signal 'after'
-
-    #@printGrid()
+    # Disable me when you're happy.
     @check()
-
+    shuttlesToMove.length = dependancies.length = impulse.length = 0
     return somethingMoved
 
 
