@@ -1443,7 +1443,6 @@ module.exports = Jit = (rawGrid) ->
 
   shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
 
-  #shuttleGrid = ShuttleGrid baseGrid, shuttles, shuttleStates, currentStates, stepWatch
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
   modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
@@ -1451,24 +1450,6 @@ module.exports = Jit = (rawGrid) ->
     groupConnections, regions, currentStates, zones, dirtyShuttles,
     shuttleAdjacency, shuttleOverlap}
 
-
-  #components = new Set # Set of child Jit objects.
-
-
-  ###
-  set = (layer, x, y, v) ->
-    if layer is 'shuttles'
-    #if v in ['shuttle', 'thinshuttle']
-      if !letsShuttleThrough baseGrid.get x, y
-        baseGrid.set x, y, 'nothing'
-
-      shuttleBuffer.set x, y, v
-    else
-      #assert !v? or typeof v is 'string'
-      return unless !v? or typeof v is 'string'
-      baseGrid.set x, y, v
-      shuttleBuffer.set x, y, null if !letsShuttleThrough v
-  ###
 
   set = (x, y, bv, sv) ->
     baseGrid.set x, y, bv
@@ -1637,6 +1618,26 @@ module.exports = Jit = (rawGrid) ->
     if !shuttleOverlap.willOverlap shuttle, state
       currentStates.set shuttle, state
 
+  getZoneContents: (x, y, c) ->
+    # This is used by the UI to shade the region the mouse is over.
+    group = modules.groups.get x, y, c
+    return null unless group
+
+    points = new Set2 # Set3 instead?
+    engines = new Set
+
+    r0 = modules.regions.get group, modules.currentStates.map
+    util.fillGraph r0, (r, hmm) ->
+      r.groups.forEach (g) ->
+        g.points.forEach (x, y, c, v) -> points.add x, y
+      r.engines.forEach (e) -> engines.add e
+      r.edges.forEach (group) ->
+        assert group.used
+        if (r = modules.regions.get group, modules.currentStates.map)
+          hmm r
+
+    return {points, engines}
+
   check: (invasive) ->
     # shuttles.check invasive
     # #engines.check invasive
@@ -1697,10 +1698,7 @@ module.exports = Jit = (rawGrid) ->
     #console.log json
     json
 
-  set: set
-    #assert (layer == 'shuttle') == (v in ['shuttle', 'thinshuttle'])
-    #set x, y, v
-
+  set: set # set(x, y, bv, sv)
   get: (layer, x, y) ->
     switch layer
       when 'shuttles'
