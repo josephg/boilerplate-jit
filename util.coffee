@@ -311,7 +311,7 @@ exports.deserialize = deserialize = (data, rebase, setCell) ->
     #if rawGrid.modules then for component in rawGrid.modules
   else
     console.log 'Loading from old style data'
-    for k, v of data
+    for k, v of data when k not in ['tw', 'th']
       {x,y} = parseXY k
       x -= minx; y -= miny
       if v in ['shuttle', 'thinshuttle']
