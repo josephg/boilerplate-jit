@@ -175,10 +175,11 @@ connectedCells = (grid, x, y, c) ->
     switch v
       when 'nothing', 'thinsolid', 'ribbon'
         [UP, RIGHT, DOWN, LEFT]
-      when 'bridge', 'ribbonbridge'
+      when 'bridge'
         if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
-      when 'positive', 'negative'
-        [c]
+      when 'ribbonbridge'
+        if c < NUMINS then [UP, DOWN] else [LEFT, RIGHT]
+      when 'positive', 'negative' then [c]
       else
         [] # Nothing is connected to nothin'.
 

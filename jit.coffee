@@ -688,6 +688,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
   getDir: (x, y, dir) ->
     v = baseGrid.get x, y
     return unless v
+    return if v in ['ribbon', 'ribbonbridge']
 
     c = switch v
       when 'positive', 'negative'
