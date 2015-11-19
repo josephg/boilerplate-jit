@@ -11,7 +11,9 @@ makeId = do ->
   nextId = 1
   -> nextId++
 
-letsShuttleThrough = (v) -> v in ['shuttle', 'thinshuttle', 'nothing', 'bridge']
+# Its super arbitrary whether shuttles can go through insulated wire. I'm
+# letting them go through ribbonbridge because its just too convenient.
+letsShuttleThrough = (v) -> v in ['nothing', 'bridge', 'ribbon', 'ribbonbridge']
 
 log.quiet = yes
 
@@ -1652,7 +1654,7 @@ module.exports = Jit = (rawGrid) ->
     shuttles.forEach (shuttle) ->
       shuttle.eachCurrentPoint (x, y, v) ->
         baseV = baseGrid.get x, y
-        assert baseV in ['nothing', 'bridge']
+        assert baseV in ['nothing', 'bridge', 'ribbon', 'ribbonbridge']
 
     # No two shuttles should be touching to each other and un-merged
     map = new Map2

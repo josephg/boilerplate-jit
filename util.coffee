@@ -26,6 +26,36 @@ DIRS = exports.DIRS = [
   {dx:-1, dy:0}
 ]
 
+
+
+# Flags:
+# - Lets shuttle through
+# - bridge
+# - air: none, all, jacketed(x), bundled cable
+# - connectivity
+K = exports.K =
+  solid: 0
+  nothing: 1
+  thinsolid: 2
+  # bundledwire? ribbon? bundle?
+  ribbon: 3
+  positive: 7
+  negative: 8
+
+  insulated1: 16
+  # ... to 31.
+
+  bridge: 33 # (nothing + bridge bit)
+
+  shuttle: 128
+  thinshuttle: 129
+
+NUMINS = exports.NUMINS = 16
+insNum = exports.insNum = do ->
+  map = {}
+  map["ins#{i}"] = i-1 for i in [1..16]
+  (v) -> map[v] ? -1
+
 parseXY = exports.parseXY = (k) ->
   [x,y] = k.split ','
   {x:x|0, y:y|0}
@@ -53,52 +83,6 @@ exports.fill = (initialX, initialY, f) ->
   return
 
 
-
-oppositeDir = exports.oppositeDir = (dir) -> (dir+2) % 4
-
-cellAt = (grid, x, y, dir) ->
-  v = grid.get x, y
-  #log 'cellat', x, y, DN[dir], v
-  switch v
-    # Shuttle in this list because there's no guarantee that the shuttle is
-    # still here later.
-    when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
-      [x, y]
-    when 'bridge', 'thinbridge'
-      [x, y, if dir in [UP, DOWN] then 0 else 1]
-    when 'negative', 'positive'
-      [x, y, dir]
-    else
-      null
-
-exports.cellMax = (v) ->
-  switch v
-    when 'positive', 'negative' then 4
-    when 'bridge', 'thinbridge' then 2
-    when null, undefined then 0
-    else 1
-
-connectedCells = exports.connectedCells = (grid, x, y, c) ->
-  # Returns a list of cells (list of lists)
-  v = grid.get x, y
-  dirs = switch v
-    when 'bridge', 'thinbridge'
-      if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
-    when 'positive', 'negative'
-      [c]
-    when 'nothing', 'thinsolid', 'thinshuttle', 'shuttle'
-      [UP, RIGHT, DOWN, LEFT]
-    else
-      [] # Nothing is connected to nothin'.
-
-  cells = []
-  for dir in dirs
-    {dx,dy} = DIRS[dir]
-    cell = cellAt grid, x+dx, y+dy, oppositeDir(dir)
-    cells.push cell if cell
-  cells
-
-
 # Flood fill through the grid from a cell
 exports.fill3 = (a0, b0, c0, f) ->
   visited = new Set3
@@ -117,6 +101,104 @@ exports.fill3 = (a0, b0, c0, f) ->
     f a, b, c, hmm
 
   return
+
+
+
+oppositeDir = exports.oppositeDir = (dir) -> (dir+2) % 4
+
+###
+
+inum, inum2, result
+0, 0, normal
+0, x, normal
+
+x, y, null
+x, x, [x,y,0]
+x, 0, [x,y,0]
+
+###
+
+exports.cellMax = (v) ->
+  switch v
+    when 'positive', 'negative' then 4
+    when 'bridge' then 2
+    when 'ribbon' then NUMINS
+    when 'ribbonbridge' then NUMINS*2
+    when null, undefined then 0
+    else 1
+
+insLevelOf = (v) ->
+  if v in ['ribbon', 'ribbonbridge']
+    0b10
+  else if insNum(v) != -1
+    0b11
+  else
+    0b01
+
+cellAt = (grid, x, y, dir, insLevel, inum2) ->
+  # console.log 'cellAt', arguments
+  v = grid.get x, y
+  return null unless insLevel & insLevelOf(v)
+  if (inum = insNum v) != -1
+    if inum2 in [-1, inum] then [x, y, 0] else null
+  else switch v
+    when 'ribbon'
+      assert inum2 != -1
+      [x, y, inum2]
+    when 'ribbonbridge'
+      [x, y, if dir in [UP, DOWN] then inum2 else inum2 + NUMINS]
+    when 'nothing', 'thinsolid'
+      [x, y, 0]
+    when 'bridge'
+      [x, y, if dir in [UP, DOWN] then 0 else 1]
+    when 'negative', 'positive'
+      [x, y, dir]
+    else
+      null
+
+connectedCells = (grid, x, y, c) ->
+  # Returns a list of cells (list of lists)
+  v = grid.get x, y
+
+  # -1 if not insulated.
+  inum = insNum v
+  insLevel = 0b01
+  dirs = if inum != -1
+    insLevel = 0b11
+    [UP, RIGHT, DOWN, LEFT]
+  else
+    if v in ['ribbon', 'ribbonbridge']
+      inum = c % NUMINS
+      insLevel = 0b10
+    switch v
+      when 'nothing', 'thinsolid', 'ribbon'
+        [UP, RIGHT, DOWN, LEFT]
+      when 'bridge', 'ribbonbridge'
+        if c is 0 then [UP, DOWN] else [LEFT, RIGHT]
+      when 'positive', 'negative'
+        [c]
+      else
+        [] # Nothing is connected to nothin'.
+
+  cells = []
+
+  for dir in dirs
+    {dx,dy} = DIRS[dir]
+    cell = cellAt grid, x+dx, y+dy, oppositeDir(dir), insLevel, inum
+    cells.push cell if cell
+
+  # console.log 'connectedCells', x, y, c, v, inum, insLevel, cells
+
+  cells
+
+exports.connectedCells = (grid, x, y, c) ->
+  cells = connectedCells grid, x, y, c
+  # connectedCells must be reflexive.
+  for [x1, y1, c1] in cells
+    set = new Set3 connectedCells grid, x1, y1, c1
+    assert set.has x, y, c
+  return cells
+
 
 
 exports.uniqueShuttlesInStates = (states) ->
