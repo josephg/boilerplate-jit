@@ -2,6 +2,11 @@
 log = require './log'
 assert = require 'assert'
 chalk = require 'chalk'
+do ->
+  if !chalk.bgGreen
+    chalk = (x) -> x
+    for fn in ['bgGreen','bgRed','bgWhite','bgBlue','blue','yellow','grey','magenta']
+      chalk[fn] = chalk
 chars =
   positive: chalk.bgGreen '+'
   negative: chalk.bgRed '-'
