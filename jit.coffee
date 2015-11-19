@@ -273,7 +273,7 @@ EngineGrid = (grid, engines) ->
 
 
 
-ShuttleStates = (grid, shuttles) ->
+ShuttleStates = (baseGrid, shuttles) ->
   # The set of shuttle states. A shuttle's state list starts off with just one
   # entry (the shuttle's starting state). States are added when the shuttle is
   # created or the shuttle moves.
@@ -306,7 +306,7 @@ ShuttleStates = (grid, shuttles) ->
     fits = yes
     shuttle.points.forEach (x, y) =>
       # The grid cell is un-enterable.
-      fits = no if !letsShuttleThrough grid.get(x+dx, y+dy)
+      fits = no if !letsShuttleThrough baseGrid.get(x+dx, y+dy)
     return fits
 
   createStateAt = (shuttle, dx, dy) ->
@@ -450,7 +450,7 @@ ShuttleGrid = (shuttleStates) ->
 
   check: ->
 
-FillKeys = (grid, shuttleStates, shuttleGrid) ->
+FillKeys = (baseGrid, shuttleStates, shuttleGrid) ->
   # The fill key is used for cell groups. Every adjacent grid cell with the
   # same fill key will always have the same pressure value regardless of
   # shuttle state. For now, the key is just a (stable) list of the states in
@@ -472,7 +472,7 @@ FillKeys = (grid, shuttleStates, shuttleGrid) ->
   shuttleGrid.fillWatch.on (x, y) ->
     fillKey.delete x, y
 
-  grid.afterWatch.on (x, y, oldv, v) ->
+  baseGrid.afterWatch.on (x, y, oldv, v) ->
     fillKey.delete x, y if letsShuttleThrough oldv
 
   shuttleStates.deleteWatch.on (state) ->
@@ -509,7 +509,7 @@ FillKeys = (grid, shuttleStates, shuttleGrid) ->
   watch: watch
   getFilledStates: (key) -> fillStates.get key
   getFillKey: (x, y) ->
-    return '' if !letsShuttleThrough grid.get(x,y)
+    return '' if !letsShuttleThrough baseGrid.get(x,y)
     shuttleStates.flushStatesAt x, y
     key = fillKey.get x, y
     if !key
@@ -522,7 +522,7 @@ FillKeys = (grid, shuttleStates, shuttleGrid) ->
     assert.equal 1, fillStates.size
 
 
-Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
+Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
   # contain the same regions.
@@ -549,10 +549,10 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
   groupsWithEngine.default = -> new Set
 
   deleteGroupsAt = (x, y) ->
-    cmax = util.cellMax grid.get x, y
+    cmax = util.cellMax baseGrid.get x, y
     for c in [0...cmax]
-      group = groupGrid.get x, y, c
-      deleteGroup group if group
+      if (group = groupGrid.get x, y, c)
+        deleteGroup group
 
   deleteGroup = (group) ->
     log group._id, ': deleting group'
@@ -575,20 +575,17 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     group.edges.forEach (x, y, c) ->
       edgeGrid.get(x, y).delete group
 
-  grid.afterWatch.forward (x, y, oldv, v) ->
+  baseGrid.afterWatch.forward (x, y, oldv, v) ->
     cmax = util.cellMax oldv
     for c in [0...cmax]
       #log '---', x, y, c, oldv
-      group = groupGrid.get x, y, c
-      deleteGroup group if group
+      if (group = groupGrid.get x, y, c)
+        deleteGroup group
       pendingCells.delete x, y, c
 
     deleteGroupsAt x+dx, y+dy for {dx, dy} in DIRS
 
-    cmax = util.cellMax v
-    for c in [0...cmax]
-      #log 'pca', x, y, c, v
-      pendingCells.add x, y, c
+    pendingCells.add x, y, c for c in [0...util.cellMax v]
 
   engines.deleteWatch.on (e) ->
     # Because part of an engine which isn't adjacent to the group can be
@@ -606,7 +603,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     edgeGrid.get(x, y)?.forEach (g) -> deleteGroup g
 
   makeGroupAt = (x, y, c) ->
-    v0 = grid.get x, y
+    v0 = baseGrid.get x, y
 
     #log 'makeGroupAt', x, y, c, v0
     assert v0?
@@ -633,7 +630,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     log group._id, ': makeGroupAt', x, y, c, "'#{key}'"
 
     util.fill3 x, y, c, (x, y, c, hmm) ->
-      v = grid.get x, y
+      v = baseGrid.get x, y
       #log 'fillCells', x, y, c, v
       return unless v # Optimization.
 
@@ -648,9 +645,6 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
       group.points.set x, y, c, v
       group.size++
 
-      __g = groupGrid.get x, y, c
-      log __g if __g
-
       assert !groupGrid.has x, y, c
       groupGrid.set x, y, c, group
 
@@ -663,8 +657,8 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
         groupsWithEngine.getDef(e).add group
 
       # Hmm for each adjacent cell.
-      for [x2, y2, c2] in util.connectedCells grid, x, y, c
-        hmm x2, y2, c2||0
+      for [x2, y2, c2] in util.connectedCells baseGrid, x, y, c
+        hmm x2, y2, c2
 
       return
 
@@ -680,7 +674,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     g = groupGrid.get x, y, c
 
     if !g
-      v = grid.get x, y
+      v = baseGrid.get x, y
       assert 0 <= c < util.cellMax(v)
 
       # I don't think there's really any value in which we don't make a cell
@@ -692,7 +686,7 @@ Groups = (grid, engines, engineGrid, shuttleGrid, fillKeys) ->
     return g if !g.useless
 
   getDir: (x, y, dir) ->
-    v = grid.get x, y
+    v = baseGrid.get x, y
     return unless v
 
     c = switch v
