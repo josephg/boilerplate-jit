@@ -2,7 +2,7 @@
 log = require './log'
 assert = require 'assert'
 chalk = require 'chalk'
-do ->
+do -> # It might not actually be worth doing this. Turns out chalk is really small!
   if !chalk.bgGreen
     chalk = (x) -> x
     for fn in ['bgGreen','bgRed','bgWhite','bgBlue','blue','yellow','grey','magenta']
@@ -202,9 +202,9 @@ connectedCells = (grid, x, y, c) ->
 exports.connectedCells = (grid, x, y, c) ->
   cells = connectedCells grid, x, y, c
   # connectedCells must be reflexive.
-  for [x1, y1, c1] in cells
-    set = new Set3 connectedCells grid, x1, y1, c1
-    assert set.has x, y, c
+  # for [x1, y1, c1] in cells
+  #   set = new Set3 connectedCells grid, x1, y1, c1
+  #   assert set.has x, y, c
   return cells
 
 

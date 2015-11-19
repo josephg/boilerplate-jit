@@ -1181,10 +1181,9 @@ Zones = (shuttles, regions, currentStates) ->
     z.used = false
     zones.delete z
     #log 'deleted zone', z
-    #zoneForRegion.delete
-    z._debug_regions.forEach (r) ->
-      log '-> with region', r._id
-      zoneForRegion.delete r
+    # z._debug_regions.forEach (r) ->
+    #   log '-> with region', r._id
+    #   zoneForRegion.delete r
     watch.signal z
 
   makeZone = (r0) ->
@@ -1194,7 +1193,7 @@ Zones = (shuttles, regions, currentStates) ->
       used: true
       pressure: 0
 
-      _debug_regions: new Set # For debugging.
+      # _debug_regions: new Set # For debugging.
 
     log zone._id, ': makezone from', r0._id
 
@@ -1207,7 +1206,7 @@ Zones = (shuttles, regions, currentStates) ->
       log 'zone fillGraph', r._id #, zoneForRegion.get(r)
       assert !zoneForRegion.get(r)?.used
       zoneForRegion.set r, zone
-      zone._debug_regions.add r
+      # zone._debug_regions.add r
 
       r.states.forEach (state) ->
         #dependancies.add state.shuttle
@@ -1334,6 +1333,10 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # All zones we're listening on should be used
     shuttlesForZone.forEach (shuttles, zone) ->
       assert zone.used
+
+  stats: ->
+    console.log 'shuttlesForZone.size:', shuttlesForZone.size
+    console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
 
 ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
   # Pairs of states in different shuttles that will be touching
@@ -1599,7 +1602,7 @@ module.exports = Jit = (rawGrid) ->
     currentStates.endTxn()
 
     # Disable me when you're happy.
-    @check()
+    # @check()
     shuttlesToMove.length = dependancies.length = impulse.length = 0
     return somethingMoved
 
@@ -1702,6 +1705,11 @@ module.exports = Jit = (rawGrid) ->
         shuttleGrid.getValue x, y
       when 'base' then baseGrid.get x, y
       else throw Error "No such layer #{layer}"
+
+  stats: ->
+    console.log Jit.stats
+    m.stats?() for k, m of modules
+    return
 
 Jit.stats =
   moves: 0
