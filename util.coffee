@@ -1,16 +1,18 @@
 {Map2, Set2, Map3, Set3} = require './collections2'
 log = require './log'
 assert = require 'assert'
-
+chalk = require 'chalk'
 chars =
-  positive: '+'
-  negative: '-'
-  nothing: ' '
-  thinsolid: 'x'
-  shuttle: 'S'
-  thinshuttle: 's'
-  bridge: 'B'
-  thinbridge: 'b'
+  positive: chalk.bgGreen '+'
+  negative: chalk.bgRed '-'
+  nothing: chalk.bgWhite ' '
+  thinsolid: chalk.bgWhite.grey 'x'
+  shuttle: chalk.magenta 'S'
+  thinshuttle: chalk.magenta.bgWhite 's'
+  bridge: chalk.bgBlue 'B'
+  thinbridge: chalk.blue 'b'
+  ribbon: chalk.yellow 'r'
+  ribbonbridge: chalk.yellow.bgBlue 'r'
 
 UP=0; RIGHT=1; DOWN=2; LEFT=3
 DN =
@@ -294,26 +296,27 @@ exports.fillGraph = (initialNode, f) ->
 
   return
 
-
 exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, stream = process.stdout) ->
   top ||= 0; left ||= 0
 
+  header = chalk.bold
+
   # Header
-  stream.write '+ '
+  stream.write header '+ '
   for x in [left..right]
-    stream.write "#{x%10}"
+    stream.write header "#{x%10}"
   stream.write '\n'
 
   for y in [top..bottom]
-    stream.write "#{y%10} "
+    stream.write header "#{y%10} "
     for x in [left..right]
       v = getFn(x, y)
       stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
     stream.write '\n'
 
-  stream.write '+ '
+  stream.write header '+ '
   for x in [left..right]
-    stream.write "#{x%10}"
+    stream.write header "#{x%10}"
   stream.write '\n'
 
 exports.gridExtents = (grid) ->

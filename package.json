@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "dependencies": {
+    "chalk": "^1.1.1",
     "map2": "^1.0.0",
     "mersenne": "^0.0.3",
     "set2": "^1.0.0"
