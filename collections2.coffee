@@ -18,7 +18,7 @@ Set::map = (fn) ->
 exports.Map2 = class Map2 extends require 'map2'
   constructor: (data) ->
     if typeof data is 'function'
-      @makeDefault = data
+      @default = data
       super()
     else
       super data
@@ -26,8 +26,8 @@ exports.Map2 = class Map2 extends require 'map2'
   # Get default value
   getDef: (k1, k2) ->
     v = @get k1, k2
-    if !v? and @makeDefault
-      @set k1, k2, v = @makeDefault k1, k2
+    if !v?
+      @set k1, k2, v = @default k1, k2
     v
 
   # This code is all written assuming forEach returns arguments in the sensible order
@@ -39,7 +39,7 @@ exports.Map3 = class Map3 # A map from (a,b,c) -> d instead of just a->d
     @map = new Map
     @size = 0
     if typeof data is 'function'
-      @makeDefault = data
+      @default = data
     else if data
       for [k1, k2, k3, v] in data
         @set k1, k2, k3, v
@@ -48,8 +48,8 @@ exports.Map3 = class Map3 # A map from (a,b,c) -> d instead of just a->d
     l1 = @map.get k1
     l2 = l1.get k2 if l1
     v = l2.get k3 if l2
-    if !v? and @makeDefault
-      @set k1, k2, k3, v = @makeDefault k1, k2
+    if !v? and @default
+      @set k1, k2, k3, v = @default k1, k2
     v
 
   has: (k1, k2, k3) ->
@@ -114,6 +114,11 @@ exports.Set3 = class Set3
     l2 = l1.get v2 if l1
     return l2?.has(v3) or false
 
+  # # Does it have
+  # has2 = (v1, v2) ->
+  #   l1 = @map.get v1
+  #   return l1?.has(v2) or false
+  #
   add: (v1, v2, v3) ->
     l1 = @map.get v1
     if !l1
@@ -190,4 +195,3 @@ exports.SetOfPairs = class SetOfPairs extends Set2
       yes
     else
       no
-

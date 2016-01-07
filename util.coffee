@@ -34,29 +34,6 @@ DIRS = exports.DIRS = [
 ]
 
 
-
-# Flags:
-# - Lets shuttle through
-# - bridge
-# - air: none, all, jacketed(x), bundled cable
-# - connectivity
-K = exports.K =
-  solid: 0
-  nothing: 1
-  thinsolid: 2
-  # bundledwire? ribbon? bundle?
-  ribbon: 3
-  positive: 7
-  negative: 8
-
-  insulated1: 16
-  # ... to 31.
-
-  bridge: 33 # (nothing + bridge bit)
-
-  shuttle: 128
-  thinshuttle: 129
-
 NUMINS = exports.NUMINS = 16
 insNum = exports.insNum = do ->
   map = {}

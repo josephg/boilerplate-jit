@@ -41,7 +41,7 @@ BaseGrid = ->
   get: grid.get.bind grid
   set: (x, y, v) ->
     assert !v? or typeof v is 'string'
-    v = undefined if v is null
+    v = undefined if v is null or v is 'solid'
     assert v not in ['shuttle', 'thinshuttle']
     oldv = grid.get x, y
     beforeWatch.signal x, y, oldv, v
@@ -64,7 +64,7 @@ pump = (grid) -> (x, y) ->
   grid.delete x, y if v
   return v
 
-EngineBuffer = (grid) ->
+BaseBuffer = (grid, values) ->
   # EngineBuffer wraps a Map2 grid to use as a buffer between cells in the grid
   # and engines.
   #
@@ -74,13 +74,13 @@ EngineBuffer = (grid) ->
   watch = new Watcher
 
   grid.afterWatch.forward (x, y, oldv, v) ->
-    if oldv in ['positive', 'negative']
+    if oldv in values
       # This working depends on EngineGrid, below.
       assert.equal buffer.get(x, y), oldv
       buffer.delete x, y
       watch.signal x, y
 
-    if v in ['positive', 'negative']
+    if v in values
       buffer.set x, y, v
       watch.signal x, y, v
 
@@ -202,9 +202,11 @@ BlobFiller = (type, buffer, grid) ->
   deleteWatch: deleteWatch
 
   flush: ->
+    #console.log('flush', (new Error).stack)
     buffer.data.forEach (x, y, v) ->
       #assert !isNaN x
       new Blob x, y, v
+    assert.equal buffer.data.size, 0
 
   flushAt: (x, y) ->
     if v = buffer.data.get x, y
@@ -542,7 +544,8 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
   # Needed for gc - this is a set of groups which depend on the fillgrid at x,y.
   edgeGrid = new Map2 -> new Set
 
-  watch = new Watcher
+  addWatch = new Watcher groups
+  deleteWatch = new Watcher
 
   # For garbage collection.
   groupsWithEngine = new WeakMap
@@ -555,13 +558,13 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
         deleteGroup group
 
   deleteGroup = (group) ->
-    log group._id, ': deleting group'
+    log group._id, ': deleting group', group
     assert group.used
 
     # Invalidate g!
     group.used = no # More for debugging than anything.
     groups.delete group
-    watch.signal group
+    deleteWatch.signal group
 
     group.engines.forEach (e) ->
       groupsWithEngine.get(e).delete group
@@ -666,9 +669,11 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
     log group._id, ': made group', group.points unless group.useless
     assert group.size
     assert group.used
+    addWatch.signal group
     return group
 
-  watch: watch
+  addWatch: addWatch
+  deleteWatch: deleteWatch
 
   get: (x, y, c) ->
     g = groupGrid.get x, y, c
@@ -700,13 +705,14 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
 
     @get x, y, c
 
-  forEach: (fn) ->
-    # This is an interesting function - more useful for debugging than anything
-    # else. By fetching all groups, you'll force them all to get generated. Not
-    # something you ever really want to do - but eh.
+  flush: ->
     pendingCells.forEach (x, y, c) ->
       makeGroupAt x, y, c
 
+  forEach: (fn) ->
+    # Fetching all groups will force them all to get generated.
+    # Probably more useful for debugging than anything.
+    @flush()
     groups.forEach (g) ->
       fn g if !g.useless
 
@@ -757,7 +763,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
       states = shuttleGrid.getStates x+dx, y+dy
       states?.forEach deleteForce
 
-  groups.watch.on (group) ->
+  groups.deleteWatch.on (group) ->
     #log.quiet = no if group._id is 60114
     log 'got group deleted', group._id
     if (set = stateForGroup.get group)
@@ -848,7 +854,7 @@ GroupConnections = (groups) ->
   connections = new SetOfPairs # Map from group -> set of groups it touches
   complete = new WeakSet # Set of groups which we have all the connections of
 
-  groups.watch.on (group) ->
+  groups.deleteWatch.on (group) ->
     #log 'deleting'
 
     # Any groups we've cached which connect to the deleted group will
@@ -918,7 +924,7 @@ Regions = (fillKeys, groups, groupConnections) ->
 
   watch = new Watcher
 
-  groups.watch.on (group) ->
+  groups.deleteWatch.on (group) ->
     map = regionsForGroup.get group
     return unless map
     regionsForGroup.delete group
@@ -1192,6 +1198,7 @@ Zones = (shuttles, regions, currentStates) ->
       _id: makeId() # For debugging
       used: true
       pressure: 0
+      fixed: true
 
       # _debug_regions: new Set # For debugging.
 
@@ -1208,6 +1215,7 @@ Zones = (shuttles, regions, currentStates) ->
       zoneForRegion.set r, zone
       # zone._debug_regions.add r
 
+      zone.fixed = false if r.states.size
       r.states.forEach (state) ->
         #dependancies.add state.shuttle
         zonesDependingOnShuttle.getDef(state.shuttle).add zone
@@ -1422,7 +1430,7 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 module.exports = Jit = (rawGrid) ->
   baseGrid = BaseGrid()
 
-  engineBuffer = EngineBuffer baseGrid
+  engineBuffer = BaseBuffer baseGrid, ['positive', 'negative']
   engines = BlobFiller 'engine', engineBuffer, baseGrid
   engineGrid = EngineGrid baseGrid, engines
 
@@ -1714,6 +1722,9 @@ module.exports = Jit = (rawGrid) ->
 Jit.stats =
   moves: 0
   checks: 0
+
+# A day may come when I need this, but it is not this day.
+# Jit.Buffer = BaseBuffer
 
 parseFile = exports.parseFile = (filename, opts) ->
   torture =

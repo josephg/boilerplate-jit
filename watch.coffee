@@ -21,6 +21,3 @@ module.exports = class Watcher
     o(args...) for o in @observers
     return
 
-
-
-
