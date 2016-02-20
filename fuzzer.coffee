@@ -7,26 +7,36 @@ log = require './log'
 util = require './util'
 
 mersenne.seed 2
-randomValue = do ->
-  VALS = [
+
+randomValueFrom = (vals) ->
+  totalWeight = 0
+  totalWeight += vals[i+1] for _, i in vals by 2
+  ->
+    r = mersenne.rand() % totalWeight
+    for v,i in vals by 2
+      r -= vals[i+1]
+      break if r < 0
+
+    v
+
+randomBase = randomValueFrom [
     null, 2
     'nothing', 10
     'positive', 1
     'negative', 1
-    'shuttle', 1
-    'thinshuttle', 1
+    #'shuttle', 1
+    #'thinshuttle', 1
     'bridge', 5
   ]
 
-  totalWeight = 0
-  totalWeight += VALS[i+1] for _, i in VALS by 2
-  ->
-    r = mersenne.rand() % totalWeight
-    for v,i in VALS by 2
-      r -= VALS[i+1]
-      break if r < 0
+randomShuttle = do ->
+  rs = randomValueFrom [null, 5,
+    'shuttle', 1
+    'thinshuttle', 1
+  ]
 
-    v
+  (bv) ->
+    if bv in ['nothing', 'bridge', 'ribbon', 'ribbonbridge'] then rs() else null
 
 grid = {}
 #grid[[x,y]] = 'nothing' for x in [1..2] for y in [1..1]
@@ -36,11 +46,6 @@ grid = {}
 
 sim = new Simulator grid
 jit = new Jit grid
-
-justCollidedStates = no
-jit.modules.shuttleAdjacency.watch.on (state1, state2) ->
-  #console.log 'collided states - ignoring'
-  justCollidedStates = yes
 
 SIZE = 4
 EXTENTS = {right:SIZE-1, bottom:SIZE-1}
@@ -63,17 +68,18 @@ fuzz = ->
   log.quiet = yes
   start = Date.now()
   for iter in [1..10000]
-    #log.quiet = !(iter is 993)
+    #log.quiet = false
     debugPrint() unless log.quiet
     #jit.check()
     for [1..2]
       x = mersenne.rand() % SIZE
       y = mersenne.rand() % SIZE
-      v = randomValue()
-      log 'set', x, y, v
+      bv = randomBase()
+      sv = randomShuttle bv
+      log 'set', x, y, bv, sv
 
-      sim.set x, y, v
-      jit.set x, y, v
+      #sim.set x, y, v
+      jit.set x, y, bv, sv
 
     debugPrint() unless log.quiet
 
@@ -103,7 +109,6 @@ fuzz = ->
       #copy = new Jit jit.toJSON()
 
 
-      justCollidedStates = no
       jit.check()
       jit.step()
       jit.check()
@@ -139,12 +144,12 @@ fuzz = ->
 
   for x in [0...SIZE]
     for y in [0...SIZE]
-      sim.set x, y, null
-      jit.set x, y, null
+      #sim.set x, y, null
+      jit.set x, y, null, null
 
-  jit.grid.forEach (x, y, v) ->
-    sim.set x, y, null
-    jit.set x, y, null
+  jit.baseGrid.forEach (x, y) ->
+    #sim.set x, y, null
+    jit.set x, y, null, null
 
   jit.checkEmpty()
 

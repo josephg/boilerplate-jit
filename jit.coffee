@@ -19,6 +19,29 @@ log.quiet = yes
 
 abs = (x) -> if x >= 0 then x else -x
 
+SHUTTLE     = 0x80
+THINSHUTTLE = 0x40
+
+normalizeShuttleV = (v) ->
+  # Shuttle values use the first 4 bits to represent the value itself. (So far
+  # 0 for empty, 0b1 for shuttle, 0b01 for thinshuttle)
+  #
+  # The next 4 bits describe the connectivity with adjacent cells. The
+  # connectivity values must always be consistent with adjacent cells. The
+  # connectivity on a newly set shuttle cell takes precendence.
+  return v if typeof v is 'number'
+
+  return if v is 'shuttle'
+    SHUTTLE | 0b1111
+  else if v is 'thinshuttle'
+    THINSHUTTLE | 0b1111
+  else
+    assert.equal v, null
+    0
+
+shuttleConnects = (sv, dir) -> !!(sv & (1<<dir))
+
+
 BaseGrid = ->
   # This stores the base layer of cells for the world - which is to say,
   # whatever is underneath shuttles.
@@ -59,6 +82,8 @@ BaseGrid = ->
       return no
   forEach: grid.forEach.bind grid
 
+  checkEmpty: -> assert.strictEqual 0, grid.size
+
 pump = (grid) -> (x, y) ->
   v = grid.get x, y
   grid.delete x, y if v
@@ -93,20 +118,46 @@ ShuttleBuffer = ->
   # in here is harder to figure out - we need semantic information about where
   # the shuttle is to both know when to delete it, and know where to put it. So
   # that happens somewhere else.
+  
+  # A grid of unrealised shuttle cells. Values are 
   buffer = new Map2
   watch = new Watcher # This is a beforeWatch
 
   set: (x, y, v) ->
     #assert !isNaN x
-    if v?
-      assert v in ['shuttle', 'thinshuttle']
+    v = normalizeShuttleV v
+
+    # Bake down adjacent shuttles no matter what.
+    watch.signal x, y, v
+
+    if v
+      # Important we do this after signalling - since there might be a shuttle
+      # here to delete.
       return if buffer.get(x, y) is v
-      watch.signal x, y, v
+      for {dx, dy},d in DIRS when shuttleConnects v, d
+        x2 = x+dx; y2 = y+dy
+        v2 = buffer.get x2, y2
+        if v2
+          # Weld adjacent shuttle cells to the new cell.
+          if !shuttleConnects v2, (d2 = util.oppositeDir d)
+            v2 |= 1<<d2
+            buffer.set x2, y2, v2
+        else
+          # Nothing here. Don't connect the new cell.
+          v &= ~(1<<d)
+
       buffer.set x, y, v
     else
-      # Signal anyway. Not having the cell in the buffer doesn't tell us
-      # anything.
-      watch.signal x, y, v
+      # Disconnect adjacent shuttle cells from this one
+      oldV = buffer.get x, y
+      for {dx, dy},d in DIRS when shuttleConnects oldV, d
+        x2 = x+dx; y2 = y+dy
+        v2 = buffer.get x2, y2
+        d2 = util.oppositeDir d
+        assert shuttleConnects v2, d2
+        v2 &= ~(1<<d2)
+        buffer.set x2, y2, v2
+
       buffer.delete x, y
 
   watch: watch
@@ -116,7 +167,7 @@ ShuttleBuffer = ->
 # The code for finding & flood filling shuttles & engines is basically
 # identical. I'll reuse it, and switch according to which type of thing I'm
 # looking for.
-BlobFiller = (type, buffer, grid) ->
+BlobFiller = (type, buffer) ->
   throw Error 'Invalid type' unless type in ['shuttle', 'engine']
 
   blobs = new Set
@@ -181,10 +232,15 @@ BlobFiller = (type, buffer, grid) ->
         x2 = x+dx; y2 = y+dy
         v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
 
-        if v is 'shuttle' and v2 isnt 'shuttle'
+        if type is 'shuttle' and v & SHUTTLE and !(v2 & SHUTTLE)
           @pushEdges.add x, y, d
 
-        if v2 and (type isnt 'engine' or v2 == v)
+          #continue if type is 'shuttle' and 
+        if v2 and ((type is 'shuttle' and shuttleConnects v, d) or
+            (type is 'engine' and v2 == v))
+
+          if type is 'shuttle' then assert shuttleConnects(v2, util.oppositeDir d)
+
           hmm x2, y2, v2
         else
           @edges.add x, y, d
@@ -220,20 +276,28 @@ BlobFiller = (type, buffer, grid) ->
 
   check: (invasive) ->
     @forEach(->) if invasive
-    ###
     blobs.forEach (b) =>
       assert b.used
       b.points.forEach (x, y, v) =>
-        assert.equal @get(x, y), b
-        # - Shuttles always have all adjacent shuttle / thinshuttle points
-        for {dx, dy} in DIRS when !b.points.has x+dx,y+dy
-          v2 = grid.get x+dx, y+dy
-          if type is 'shuttle'
-            assert v2 not in ['shuttle', 'thinshuttle']
-          else
-            assert v2 != v
-    ###
+        if type is 'engine' then assert !buffer.data.has x, y
 
+        # - Shuttles always have all adjacent shuttle / thinshuttle points
+        for {dx, dy},d in DIRS
+          if b.points.has x+dx,y+dy
+            if type is 'shuttle'
+              v2 = b.points.get x+dx, y+dy
+              c1 = shuttleConnects v, d
+              c2 = shuttleConnects v2, util.oppositeDir d
+              assert.equal c1, c2, "Mismatched adjacency in a shuttle: #{c1} #{c2}"
+          else
+            # Make sure we've slurped up all the dangling grid cells
+            if type is 'engine'
+              v2 = buffer.data.get x+dx, y+dy
+              assert v2 != v
+            else if type is 'shuttle'
+              assert !shuttleConnects v, d
+
+# Super simple module to get the engine at an arbitrary grid cell (x, y).
 EngineGrid = (grid, engines) ->
   engineGrid = new Map2 # x,y -> engine
 
@@ -411,7 +475,7 @@ ShuttleGrid = (shuttleStates) ->
       stateGrid.getDef(x, y).add state
       stateWatch.signal x, y
 
-      if v is 'shuttle' and state.valid
+      if v & SHUTTLE and state.valid
         #log "adding #{state.id} to #{x}, #{y}"
         fillGrid.getDef(x, y).add state
         fillWatch.signal x, y
@@ -424,7 +488,7 @@ ShuttleGrid = (shuttleStates) ->
       stateGrid.get(x, y).delete state
       stateWatch.signal x, y
 
-      if v is 'shuttle' and state.valid
+      if v & SHUTTLE and state.valid
         fillGrid.get(x, y).delete state
         fillWatch.signal x, y
 
@@ -564,7 +628,6 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
     # Invalidate g!
     group.used = no # More for debugging than anything.
     groups.delete group
-    deleteWatch.signal group
 
     group.engines.forEach (e) ->
       groupsWithEngine.get(e).delete group
@@ -577,6 +640,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
 
     group.edges.forEach (x, y, c) ->
       edgeGrid.get(x, y).delete group
+    deleteWatch.signal group
 
   baseGrid.afterWatch.forward (x, y, oldv, v) ->
     cmax = util.cellMax oldv
@@ -850,6 +914,8 @@ GroupConnections = (groups) ->
   # So, here we track & report on connections between groups. Groups are either
   # complete or incomplete. Incomplete groups need to be regenerated if
   # requested, but they are useful for garbage collection.
+ 
+  # A group is always regenerated if a new group is drawn next to it.
 
   connections = new SetOfPairs # Map from group -> set of groups it touches
   complete = new WeakSet # Set of groups which we have all the connections of
@@ -904,9 +970,13 @@ GroupConnections = (groups) ->
     assert.equal 0, connections.size
 
 
-#StateEdge = (shuttleStates) ->
-  # The edge of a shuttle is a set of grid cells (x, y, cell) which may
 
+# A region is a set of connected groups where all the groups are only connected
+# in a single set of shuttle states. For example, a tunnel with a shuttle in it
+# will have regions to connect the groups on either side of the shuttle.
+#
+# Regions only connect groups which have the same shuttle key. That is, groups
+# which depend on exactly the same set of shuttle states.
 Regions = (fillKeys, groups, groupConnections) ->
   # The region grid is lovely. This maps from:
   # group -> set of shuttle states -> region
@@ -1114,6 +1184,8 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
 CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) ->
   # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
   # I split it out of ShuttleGrid for modularity's sake.
+  #
+  # This has nothing to do with merging shuttles when they touch. Never did.
 
   # Delete the shuttle when the base grid changes around it
   grid.beforeWatch.forward (x, y, oldv, v) ->
@@ -1148,13 +1220,11 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
     shuttle = shuttleGrid.getShuttle x, y
     if shuttle
       shuttles.delete shuttle, shuttle.currentState
-    else if v
-      for {dx, dy} in DIRS
-        if (shuttle = shuttleGrid.getShuttle x+dx, y+dy)
-          shuttles.delete shuttle, shuttle.currentState
 
-
-
+    # Also collapse any adjacent shuttle that needs welding.
+    for {dx, dy},d in DIRS when shuttleConnects v, d
+      if (shuttle = shuttleGrid.getShuttle x+dx, y+dy)
+        shuttles.delete shuttle, shuttle.currentState
 
 
 Zones = (shuttles, regions, currentStates) ->
@@ -1165,7 +1235,8 @@ Zones = (shuttles, regions, currentStates) ->
   zones = new Set # This set may be redundant.
   zoneForRegion = new Map # region -> zone
 
-  # For garbage collection
+  # For garbage collection. If the state of any of these shuttles changes, the
+  # zone must be destroyed.
   zonesDependingOnShuttle = new WeakMap # shuttle -> set of zones
   zonesDependingOnShuttle.default = -> new Set
 
@@ -1173,8 +1244,11 @@ Zones = (shuttles, regions, currentStates) ->
 
   regions.watch.on (r) ->
     deleteZone zoneForRegion.get r
+    zoneForRegion.delete r
 
   deleteZonesWithShuttle = (shuttle) ->
+    # Note that zoneForRegion doesn't get cleared here. We'll just leave an old
+    # zone kicking around assuming we'll replace it soon anyway.
     zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
       deleteZone zone
 
@@ -1186,10 +1260,6 @@ Zones = (shuttles, regions, currentStates) ->
     log 'deleting zone', z._id
     z.used = false
     zones.delete z
-    #log 'deleted zone', z
-    # z._debug_regions.forEach (r) ->
-    #   log '-> with region', r._id
-    #   zoneForRegion.delete r
     watch.signal z
 
   makeZone = (r0) ->
@@ -1204,8 +1274,6 @@ Zones = (shuttles, regions, currentStates) ->
 
     log zone._id, ': makezone from', r0._id
 
-    # Set of shuttles - if the state of any of these shuttles changes, the zone must die.
-    #dependancies = new Set
     # Set of engines inside the zone
     engines = new Set
 
@@ -1231,10 +1299,10 @@ Zones = (shuttles, regions, currentStates) ->
         assert group.used
         r = regions.get group, currentStates.map
         if r is null
-          # We were stymied because the group is filled at the moment.
-          # The group could be filled by any one of the shuttles in
-          # group.shuttles - we could go looking to find which one, but for now
-          # I'm just going to add them all as dependancies.
+          # We were stymied because the group is filled at the moment. The
+          # group could be filled by any one of the shuttles in group.shuttles
+          # - we could go looking to find which one, but for now I'm just going
+          # to add them all as dependancies.
           zonesDependingOnShuttle.getDef(shuttle).add zone for shuttle in group.shuttles
         # r is null if the group is currently filled.
         hmm r if r
@@ -1346,59 +1414,6 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     console.log 'shuttlesForZone.size:', shuttlesForZone.size
     console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
 
-ShuttleAdjacency = (shuttles, shuttleStates, shuttleGrid, currentStates) ->
-  # Pairs of states in different shuttles that will be touching
-  adjacentStates = new SetOfPairs
-
-  watch = new Watcher
-
-  shuttleStates.addWatch.forward (state1) ->
-    return unless state1.valid
-    assert state1.shuttle.used
-
-    state1.shuttle.edges.forEach (x, y, dir) ->
-      # Go through all the cells that lie just outside of the edge.
-      # Note these will repeat sometimes.
-      {dx, dy} = DIRS[dir]
-      x += state1.dx + dx; y += state1.dy + dy
-
-      shuttleGrid.stateGrid.get(x, y)?.forEach (state2) ->
-        return if state2.shuttle is state1.shuttle
-        #log 'adjacent states found', state1, state2
-        assert state2.shuttle.used
-        adjacentStates.add state1, state2
-
-  shuttleStates.deleteWatch.on (state) ->
-    return unless state.valid
-    adjacentStates.deleteAll state
-    #log 'adj', adjacentStates
-
-  currentStates.watch.on (shuttle1, prev, state1) ->
-    #log '-----> csw', state1
-    assert shuttle1.used
-    adjacentStates.getAll(state1)?.forEach (state2) ->
-      # The shuttle might be adjacent to several other shuttles.
-      #log 'checking', state1, state2
-      shuttle2 = state2.shuttle
-      # We need to use getImmediate here so shuttles don't collide while
-      # they're moving.
-      if currentStates.getImmediate(shuttle2) is state2
-        # Oof. collapse.
-        #log 'ccccc', shuttle1.id, shuttle2.id
-        #log 'ccccc', state1, state2
-        shuttles.delete shuttle1, state1 if shuttle1.used
-        assert shuttle2.used
-        shuttles.delete shuttle2, state2
-        watch.signal state1, state2
-
-    #log '<----- csw'
-
-  watch: watch
-
-  checkEmpty: ->
-    assert.equal 0, adjacentStates.size
-    adjacentStates.forEach (a, b) -> throw 'Should be empty'
-
 ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
   # Pairs of states in different shuttles which would overlap
   overlappingStates = new SetOfPairs
@@ -1431,11 +1446,11 @@ module.exports = Jit = (rawGrid) ->
   baseGrid = BaseGrid()
 
   engineBuffer = BaseBuffer baseGrid, ['positive', 'negative']
-  engines = BlobFiller 'engine', engineBuffer, baseGrid
+  engines = BlobFiller 'engine', engineBuffer
   engineGrid = EngineGrid baseGrid, engines
 
   shuttleBuffer = ShuttleBuffer()
-  shuttles = BlobFiller 'shuttle', shuttleBuffer, baseGrid
+  shuttles = BlobFiller 'shuttle', shuttleBuffer
 
   shuttleStates = ShuttleStates baseGrid, shuttles
   shuttleGrid = ShuttleGrid shuttleStates
@@ -1449,14 +1464,12 @@ module.exports = Jit = (rawGrid) ->
   CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
   dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
-  shuttleAdjacency = ShuttleAdjacency shuttles, shuttleStates, shuttleGrid, currentStates
-
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
 
   modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
     groupConnections, regions, currentStates, zones, dirtyShuttles,
-    shuttleAdjacency, shuttleOverlap}
+    shuttleOverlap}
 
 
   set = (x, y, bv, sv) ->
@@ -1477,10 +1490,8 @@ module.exports = Jit = (rawGrid) ->
       log 'calculating pressure in group', group
       assert group.used
       zone = zones.getZoneForGroup group
-      # Zone is null if the group is filled. But the group should never be
-      # filled, because if it was this shuttle would have glommed on to
-      # another shuttle anyway.
-      #return if zone is null
+      # Zone is null if the group is filled.
+      return if zone is null
       assert zone.used
       log 'pressure', zone.pressure
       deps.add zone
@@ -1663,6 +1674,7 @@ module.exports = Jit = (rawGrid) ->
         assert baseV in ['nothing', 'bridge', 'ribbon', 'ribbonbridge']
 
     # No two shuttles should be touching to each other and un-merged
+    ###
     map = new Map2
     shuttles.forEach (shuttle) ->
       shuttle.eachCurrentPoint (x, y, v) ->
@@ -1670,7 +1682,7 @@ module.exports = Jit = (rawGrid) ->
           s2 = map.get(x+dx, y+dy)
           assert !s2 || s2 == shuttle
         map.set x, y, shuttle
-
+    ###
 
   checkEmpty: ->
     m.checkEmpty?() for k, m of modules
@@ -1683,7 +1695,7 @@ module.exports = Jit = (rawGrid) ->
         return log 'no state for', s
       {dx, dy} = state
       s.points.forEach (x, y, v) ->
-        overlay.set x+dx, y+dy, v
+        overlay.set x+dx, y+dy, if (v & SHUTTLE) then 'shuttle' else 'thinshuttle'
 
     util.printCustomGrid util.gridExtents(baseGrid), (x, y) ->
       overlay.get(x, y) or baseGrid.get x, y
