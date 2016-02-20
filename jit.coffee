@@ -1515,25 +1515,9 @@ module.exports = Jit = (rawGrid) ->
       # We can't move any further in this direction.
       break unless (next = shuttleStates.getStateNear state, dir)
 
-      # This shuttle is about to collide into another shuttle. ABORT!
+      # This shuttle is about to collide into another shuttle.
       if shuttleOverlap.willOverlap shuttle, next
-        # We'll treat a shuttle colliding with another shuttle as a successful
-        # move. Remember, the shuttle won't start colliding with anything, so
-        # if we hit this state either
-        # - we actually did move here
-        # or
-        # - The other shuttle moved in our way, in which case its already moved
-        # and we'll glom onto it at the end of the frame.
-        #
-        # This world you can see the difference:
-        # ;;;;;;;
-        # ; S   N
-        # ;  S  ;
-        # ;;;P;;;
-        #
-        # return state -> shuttle 2 doesn't move, and they glom together.
-        # break -> both shuttles move right.
-        return state
+        break
 
       state = next
       moved = yes
@@ -1645,7 +1629,7 @@ module.exports = Jit = (rawGrid) ->
     engines = new Set
 
     r0 = modules.regions.get group, modules.currentStates.map
-    util.fillGraph r0, (r, hmm) ->
+    if r0 then util.fillGraph r0, (r, hmm) ->
       r.groups.forEach (g) ->
         g.points.forEach (x, y, c, v) -> points.add x, y
       r.engines.forEach (e) -> engines.add e

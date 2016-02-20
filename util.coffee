@@ -40,6 +40,18 @@ insNum = exports.insNum = do ->
   map["ins#{i}"] = i-1 for i in [1..16]
   (v) -> map[v] ? -1
 
+
+SHUTTLE     = 0x80
+THINSHUTTLE = 0x40
+
+shuttleStr = exports.shuttleStr = (v) ->
+  if (v & SHUTTLE)
+    'shuttle'
+  else if (v & THINSHUTTLE)
+    'thinshuttle'
+  else
+    null
+
 parseXY = exports.parseXY = (k) ->
   [x,y] = k.split ','
   {x:x|0, y:y|0}
@@ -294,6 +306,7 @@ exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, 
     stream.write header "#{y%10} "
     for x in [left..right]
       v = getFn(x, y)
+      v = shuttleStr v if typeof v is 'number'
       stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
     stream.write '\n'
 
