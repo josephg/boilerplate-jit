@@ -217,6 +217,7 @@ BlobFiller = (type, buffer) ->
         dx = if @currentState then @currentState.dx else 0
         dy = if @currentState then @currentState.dy else 0
         @points.forEach (x, y, v) -> fn x+dx, y+dy, v
+      @blockedX = @blockedY = null
 
     blobs.add this
 
@@ -232,9 +233,6 @@ BlobFiller = (type, buffer) ->
         x2 = x+dx; y2 = y+dy
         v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
 
-        if type is 'shuttle' and v & SHUTTLE and !(v2 & SHUTTLE)
-          @pushEdges.add x, y, d
-
           #continue if type is 'shuttle' and 
         if v2 and ((type is 'shuttle' and shuttleConnects v, d) or
             (type is 'engine' and v2 == v))
@@ -243,6 +241,9 @@ BlobFiller = (type, buffer) ->
 
           hmm x2, y2, v2
         else
+          if type is 'shuttle' and v & SHUTTLE
+            @pushEdges.add x, y, d
+
           @edges.add x, y, d
 
     assert @size
@@ -864,6 +865,8 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
     canMoveY = shuttleStates.getStateNear(state, UP) or
       shuttleStates.getStateNear(state, DOWN)
 
+    # A force in a given direction is either null or a map from group -> how
+    # much pressure that group exerts.
     force =
       x: if canMoveX then new Map
       y: if canMoveY then new Map
@@ -886,7 +889,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
       {dx, dy} = DIRS[dir]
 
       log 'edge', x, y
-      log 'looking in', x+dx, y+dy
+      log 'looking in', x+dx, y+dy, util.oppositeDir dir
 
       group = groups.getDir x+dx, y+dy, util.oppositeDir dir
       return unless group
@@ -900,7 +903,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
         else
           stateForGroup.getDef(group).add state
 
-    #log '-> makeForce', force
+    log '-> makeForce', force
     force
 
   watch: watch
@@ -1345,38 +1348,57 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
   shuttleZoneDeps.default = -> new Set
 
+  blocksShuttles = new Map # Shuttle -> set of shuttles it blocks from moving
+  blocksShuttles.default = -> new Set
+
   shuttles.deleteWatch.on (s) ->
-    # A shuttle was deleted.
-    if (deps = shuttleZoneDeps.get s)
-      deps.forEach (z) -> shuttlesForZone.get(z).delete s
-      shuttleZoneDeps.delete s
+    log 's deletewatch', s
+
+    # setDirty clears most of the state associated with a shuttle.
+    # No need to repeat work - we'll set it dirty then remove it.
+    setDirty s
     dirty.delete s
+
+    # The one thing dirty shuttles don't do is wake up any dependants (at
+    # least, they don't do it until they move).
+    if (blocks = blocksShuttles.get s)
+      blocks.forEach (s2) -> setDirty s2, 'blocking shuttle was deleted'
+      assert.equal blocks.size, 0
+      blocksShuttles.delete s
 
   zones.watch.on (z) ->
     log 'zw', z._id
     # A zone was deleted. Set any relevant shuttles to dirty.
     if (set = shuttlesForZone.get z)
       log 'zones watch', z._id
-      set.forEach (s) -> setDirty s
+      set.forEach (s) -> setDirty s, 'adjacent zone killed'
       shuttlesForZone.delete z
 
   stateForce.watch.on (state) ->
     # The force on the shuttle was changed in some way.
-    setDirty state.shuttle
+    setDirty state.shuttle, 'force changed'
 
   # The shuttle moved. Make that sucker dirty for the next step too.
   currentStates.watch.on (shuttle) ->
-    setDirty shuttle
-  shuttleStates.deleteWatch.on (state) ->
-    log 'deletewatch', state
-    # We'll delete invalid states when the region is passable once again
-    setDirty state.shuttle
+    setDirty shuttle, 'moved this step'
+    if (blocks = blocksShuttles.get shuttle)
+      blocks.forEach (s2) -> setDirty s2, 'unblocked'
+      blocks.clear()
 
-  setDirty = (shuttle) ->
-    return if dirty.has shuttle
+  shuttleStates.deleteWatch.on (state) ->
+    log 'state deletewatch', state
+    # We'll delete invalid states when the region is passable once again
+    setDirty state.shuttle, 'state was deleted'
+
+  setDirty = (shuttle, reason) ->
+    #assert shuttle.used, "Tried to set an unused shuttle dirty"
+    if dirty.has shuttle
+      #log "XXXDirty #{shuttle.id} because #{reason}" if reason
+      return
+
+    log "setDirty #{shuttle.id} because #{reason}" if reason
 
     log '+ dirty shuttle', shuttle
-    dirty.add shuttle
     if (deps = shuttleZoneDeps.get shuttle)
       # Clear dependancies.
       deps.forEach (z) ->
@@ -1384,13 +1406,33 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
       shuttleZoneDeps.delete shuttle
 
-  # The shuttle is clean - but it will become dirty if these zones change.
-  setCleanDeps: (shuttle, deps) ->
+    if (b = shuttle.blockedX)
+      blocksShuttles.get(b).delete shuttle
+      shuttle.blockedX = null
+    if (b = shuttle.blockedY)
+      blocksShuttles.get(b).delete shuttle
+      shuttle.blockedY = null
+
+    # This function is also called when the shuttle is deleted by both
+    # stateForce.watch and currentStates.watch. And that'll happen before the
+    # shuttle is actually deleted by shuttles.deleteWatch.
+    # In that case we still want to purge it from tracking sets, but we don't
+    # need to dignify the shuttle with dirtiness.
+    #if shuttle.used
+    dirty.add shuttle
+
+  data: dirty
+
+  # The shuttle is clean - but it will become dirty if these zones change or
+  # blocking shuttles move.
+  setCleanDeps: (shuttle, deps, blocked) ->
     actuallyClean = true
     deps.forEach (z) ->
       actuallyClean = false if !z.used
 
-    return if !actuallyClean
+    if !actuallyClean
+      log "NOT CLEANING #{shuttle.id} - zones changed"
+      return
 
     # A dirty shuttle didn't move.
     dirty.delete shuttle
@@ -1398,6 +1440,14 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     deps.forEach (z) ->
       shuttlesForZone.getDef(z).add shuttle
     shuttleZoneDeps.set shuttle, deps
+
+    log 'setCleanDeps', shuttle.id, blocked.x?.id, blocked.y?.id
+    if (b = blocked.x)
+      blocksShuttles.getDef(b).add shuttle
+      shuttle.blockedX = b
+    if (b = blocked.y)
+      blocksShuttles.getDef(b).add shuttle
+      shuttle.blockedY = b
 
   forEach: (fn) -> dirty.forEach fn
 
@@ -1409,8 +1459,24 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # All zones we're listening on should be used
     shuttlesForZone.forEach (shuttles, zone) ->
       assert zone.used
+      # And shuttleZoneDeps and shuttlesForZone should be a bijection.
+      shuttles.forEach (s) ->
+        assert !dirty.has(s)
+        assert shuttleZoneDeps.get(s).has zone
+
+    shuttleZoneDeps.forEach (zones, s) ->
+      zones.forEach (z) ->
+        assert shuttlesForZone.get(z).has s
+
+    blocksShuttles.forEach (set, s1) ->
+      set.forEach (s2) ->
+        assert s1 == s2.blockedX or s1 == s2.blockedY
+
+  checkEmpty: ->
+    assert.equal blocksShuttles.size, 0
 
   stats: ->
+    console.log '# dirty shuttles:', dirty.size
     console.log 'shuttlesForZone.size:', shuttlesForZone.size
     console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
 
@@ -1431,15 +1497,21 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
 
   willOverlap: (shuttle1, state1) ->
     # Would the named shuttle overlap with something if it enters the named state?
-    overlap = no
+    # Returns an arbitrary overlapping shuttle if one is found, else null.
+    overlap = null
     overlappingStates.getAll(state1)?.forEach (state2) ->
       shuttle2 = state2.shuttle
-      overlap = yes if currentStates.getImmediate(shuttle2) is state2
+      # I'm going to check both the state last frame (currentState) as well as
+      # the state we're moving into. This is to remove the visible
+      # nondeterminism of two adjacent shuttles moving together where sometimes
+      # they need a gap and sometimes they don't.
+      #
+      # By checking both currentState and currentStates.getImmediate we're
+      # forcing a gap when moving always.
+      if shuttle2.currentState is state2 or currentStates.getImmediate(shuttle2) is state2
+        overlap = shuttle2
     log 'overlap', overlap, shuttle1.id
     return overlap
-
-
-
 
 
 module.exports = Jit = (rawGrid) ->
@@ -1500,8 +1572,9 @@ module.exports = Jit = (rawGrid) ->
 
     return impulse
 
-  tryMove = (shuttle, state, impulse, isTop) ->
-    return unless impulse
+  tryMove = (shuttle, state, impulse, blocked, isTop) ->
+    log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
+    return null unless impulse
 
     dir = if impulse < 0
       impulse = -impulse
@@ -1510,19 +1583,23 @@ module.exports = Jit = (rawGrid) ->
       if isTop then DOWN else RIGHT
 
     moved = no
+    b = null
     while impulse
-      log 'impulse', impulse, 'dir', dir
       # We can't move any further in this direction.
-      break unless (next = shuttleStates.getStateNear state, dir)
+      unless (next = shuttleStates.getStateNear state, dir)
+        log 'no state avaliable in dir', util.DN[dir], 'from state', state.dx, state.dy
+        break
 
       # This shuttle is about to collide into another shuttle.
-      if shuttleOverlap.willOverlap shuttle, next
+      if (b = shuttleOverlap.willOverlap shuttle, next)
         break
 
       state = next
       moved = yes
       impulse--
 
+    # Oh pointers, how I miss thee
+    if b then (if isTop then blocked.y = b else blocked.x = b)
     # Return the new state.
     return if moved then state else null
 
@@ -1532,9 +1609,11 @@ module.exports = Jit = (rawGrid) ->
   shuttlesToMove = []
   dependancies = []
   impulse = []
+  stepCount = 1
 
   step: ->
-    log '------------ STEP ------------'
+    log "------------ STEP #{stepCount++} ------------"
+    #shuttles.forEach (s) -> console.log(s.blockedBy)
     @calcPressure()
     @update()
 
@@ -1554,16 +1633,18 @@ module.exports = Jit = (rawGrid) ->
       assert shuttle.used
       force = stateForce.get shuttle.currentState
       {x:fx, y:fy} = force
+      log 'step() looking at shuttle', shuttle.id, force
+
+      shuttlesToMove.push shuttle
 
       # Set of zones which, when deleted, will make the shuttle dirty again.
       # This is only used if the shuttle doesn't move. So its kinda gross that
       # we have to allocate an object here - but .. eh.
-      shuttlesToMove.push shuttle
-
       # Allocating a bunch of these here might turn out to be expensive.
       dependancies.push deps = new Set
       impulse.push if fx then calcImpulse fx, deps else 0
       impulse.push if fy then calcImpulse fy, deps else 0
+      log 'impulse', impulse[impulse.length - 2], impulse[impulse.length - 1]
 
     return !!shuttlesToMove.length
 
@@ -1574,6 +1655,7 @@ module.exports = Jit = (rawGrid) ->
 
     somethingMoved = no
     currentStates.beginTxn()
+    blocked = {x:null, y:null}
     for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
       # both, then pick the stronger force and preferentially move in that
@@ -1582,13 +1664,14 @@ module.exports = Jit = (rawGrid) ->
       yImpulse = impulse[i*2+1]
 
       state = shuttle.currentState
+      blocked.x = blocked.y = null
 
       if abs(yImpulse) >= abs(xImpulse)
-        next = tryMove shuttle, state, yImpulse, yes
-        next = tryMove shuttle, state, xImpulse, no if !next
+        next = tryMove shuttle, state, yImpulse, blocked, yes
+        next = tryMove shuttle, state, xImpulse, blocked, no if !next
       else
-        next = tryMove shuttle, state, xImpulse, no
-        next = tryMove shuttle, state, yImpulse, yes if !next
+        next = tryMove shuttle, state, xImpulse, blocked, no
+        next = tryMove shuttle, state, yImpulse, blocked, yes if !next
 
       if next
         log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
@@ -1600,7 +1683,7 @@ module.exports = Jit = (rawGrid) ->
         # The shuttle didn't move.
         deps = dependancies[i]
         log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
-        dirtyShuttles.setCleanDeps shuttle, deps
+        dirtyShuttles.setCleanDeps shuttle, deps, blocked
         #log 'deps', deps
     currentStates.endTxn()
 
@@ -1743,9 +1826,12 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.torture() if torture
 
   if !torture
-    for [1..3]
+    for [1..10]
       jit.step()
       jit.printGrid()
+      #console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
+      #jit.modules.shuttles.forEach (s) =>
+      #  console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
 
     log '-----'
     #jit.grid.set 5, 2, null

@@ -20,7 +20,7 @@ chars =
   ribbonbridge: chalk.yellow.bgBlue 'r'
 
 UP=0; RIGHT=1; DOWN=2; LEFT=3
-DN =
+DN = exports.DN =
   0: 'UP'
   1: 'RIGHT'
   2: 'DOWN'

@@ -92,7 +92,7 @@ exports.Map3 = class Map3 # A map from (a,b,c) -> d instead of just a->d
   clear: -> @map.clear()
 
   inspect: (depth, options) ->
-    return '[Map3]' if depth < 0
+    return "[Map3 (#{@size})]" if depth < 0
     return '{[Map3]}' if @size is 0
     entries = []
     @forEach (k1, k2, k3, v) ->
@@ -157,7 +157,7 @@ exports.Set3 = class Set3
   clear: -> @map.clear()
 
   inspect: (depth, options) ->
-    return '[Set3]' if depth < 0
+    return "[Set3 (#{@size})]" if depth < 0
     return '{[Set3]}' if @size is 0
     entries = []
     @forEach (v1, v2, v3) ->
