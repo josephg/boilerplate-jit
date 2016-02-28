@@ -241,12 +241,15 @@ BlobFiller = (type, buffer) ->
 
           hmm x2, y2, v2
         else
-          if type is 'shuttle' and v & SHUTTLE
-            @pushEdges.add x, y, d
-
           @edges.add x, y, d
 
+        if type is 'shuttle' and v & SHUTTLE and (!v2 or !(v2 & SHUTTLE) or !shuttleConnects(v, d))
+          @pushEdges.add x, y, d
+        else
+          console.log dx, dy, d, type, v, v2
+
     assert @size
+    assert @pushEdges.size is 0 or @pushEdges.size >= 4 if type is 'shuttle'
     if type is 'engine'
       @type = v0
       @pressure = (if v0 is 'positive' then 1 else -1) * @size
