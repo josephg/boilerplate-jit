@@ -1389,9 +1389,6 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
   shuttleZoneDeps.default = -> new Set
 
-  blocksShuttles = new Map # Shuttle -> set of shuttles it blocks from moving
-  blocksShuttles.default = -> new Set
-
   shuttles.deleteWatch.on (s) ->
     log 's deletewatch', s
 
@@ -1399,13 +1396,6 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # No need to repeat work - we'll set it dirty then remove it.
     setDirty s
     dirty.delete s
-
-    # The one thing dirty shuttles don't do is wake up any dependants (at
-    # least, they don't do it until they move).
-    if (blocks = blocksShuttles.get s)
-      blocks.forEach (s2) -> setDirty s2, 'blocking shuttle was deleted'
-      assert.equal blocks.size, 0
-      blocksShuttles.delete s
 
   zones.watch.on (z) ->
     log 'zw', z._id, z
@@ -1422,9 +1412,6 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   # The shuttle moved. Make that sucker dirty for the next step too.
   currentStates.watch.on (shuttle) ->
     setDirty shuttle, 'moved this step'
-    if (blocks = blocksShuttles.get shuttle)
-      blocks.forEach (s2) -> setDirty s2, 'unblocked'
-      blocks.clear()
 
   shuttleStates.deleteWatch.on (state) ->
     log 'state deletewatch', state
@@ -1446,13 +1433,6 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
       shuttleZoneDeps.delete shuttle
 
-    if (b = shuttle.blockedX)
-      blocksShuttles.get(b).delete shuttle
-      shuttle.blockedX = null
-    if (b = shuttle.blockedY)
-      blocksShuttles.get(b).delete shuttle
-      shuttle.blockedY = null
-
     # This function is also called when the shuttle is deleted by both
     # stateForce.watch and currentStates.watch. And that'll happen before the
     # shuttle is actually deleted by shuttles.deleteWatch.
@@ -1465,13 +1445,13 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
   # The shuttle is clean - but it will become dirty if these zones change or
   # blocking shuttles move.
-  setCleanDeps: (shuttle, deps, blocked) ->
+  setCleanDeps: (shuttle, deps) ->
     actuallyClean = true
     deps.forEach (z) ->
       actuallyClean = false if !z.used
 
     if !actuallyClean
-      console.log "NOT CLEANING #{shuttle.id} - zones changed"
+      log "NOT CLEANING #{shuttle.id} - zones changed"
       return
 
     # A dirty shuttle didn't move.
@@ -1481,13 +1461,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       shuttlesForZone.getDef(z).add shuttle
     shuttleZoneDeps.set shuttle, deps
 
-    console.log 'setCleanDeps', shuttle.id, blocked.x?.id, blocked.y?.id
-    if (b = blocked.x)
-      blocksShuttles.getDef(b).add shuttle
-      shuttle.blockedX = b
-    if (b = blocked.y)
-      blocksShuttles.getDef(b).add shuttle
-      shuttle.blockedY = b
+    log 'setCleanDeps', shuttle.id
 
   forEach: (fn) -> dirty.forEach fn
 
@@ -1508,15 +1482,9 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       zones.forEach (z) ->
         assert shuttlesForZone.get(z).has s
 
-    blocksShuttles.forEach (set, s1) ->
-      set.forEach (s2) ->
-        assert s1 == s2.blockedX or s1 == s2.blockedY
-
   checkEmpty: ->
-    assert.equal blocksShuttles.size, 0
 
   stats: ->
-    console.log '# dirty shuttles:', dirty.size
     console.log 'shuttlesForZone.size:', shuttlesForZone.size
     console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
 
@@ -1611,7 +1579,7 @@ module.exports = Jit = (rawGrid) ->
 
     return impulse
 
-  tryMove = (shuttle, state, impulse, blocked, isTop) ->
+  tryMove = (shuttle, state, impulse, isTop) ->
     console.log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
     return null unless impulse
 
@@ -1638,7 +1606,7 @@ module.exports = Jit = (rawGrid) ->
       impulse--
 
     # Oh pointers, how I miss thee
-    if b then (if isTop then blocked.y = b else blocked.x = b)
+    #if b then (if isTop then blocked.y = b else blocked.x = b)
     # Return the new state.
     return if moved then state else null
 
@@ -1694,7 +1662,6 @@ module.exports = Jit = (rawGrid) ->
 
     somethingMoved = no
     currentStates.beginTxn()
-    blocked = {x:null, y:null}
     for shuttle, i in shuttlesToMove
       # If we *might* move in both X and Y directions, we'll calculate them
       # both, then pick the stronger force and preferentially move in that
@@ -1703,14 +1670,13 @@ module.exports = Jit = (rawGrid) ->
       yImpulse = impulse[i*2+1]
 
       state = shuttle.currentState
-      blocked.x = blocked.y = null
 
       if abs(yImpulse) >= abs(xImpulse)
-        next = tryMove shuttle, state, yImpulse, blocked, yes
-        next = tryMove shuttle, state, xImpulse, blocked, no if !next
+        next = tryMove shuttle, state, yImpulse, yes
+        next = tryMove shuttle, state, xImpulse, no if !next
       else
-        next = tryMove shuttle, state, xImpulse, blocked, no
-        next = tryMove shuttle, state, yImpulse, blocked, yes if !next
+        next = tryMove shuttle, state, xImpulse, no
+        next = tryMove shuttle, state, yImpulse, yes if !next
 
       if next
         console.log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
@@ -1722,7 +1688,7 @@ module.exports = Jit = (rawGrid) ->
         # The shuttle didn't move.
         deps = dependancies[i]
         log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
-        dirtyShuttles.setCleanDeps shuttle, deps, blocked
+        dirtyShuttles.setCleanDeps shuttle, deps
         #log 'deps', deps
     currentStates.endTxn()
 
@@ -1883,9 +1849,9 @@ parseFile = exports.parseFile = (filename, opts) ->
         break
 
       console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
-      jit.modules.shuttles.forEach (s) =>
-        if !jit.modules.dirtyShuttles.data.has s
-          console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
+      #jit.modules.shuttles.forEach (s) =>
+      #  if !jit.modules.dirtyShuttles.data.has s
+      #    console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
 
     log '-----'
     #jit.grid.set 5, 2, null
