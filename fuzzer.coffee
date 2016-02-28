@@ -110,8 +110,13 @@ fuzz = ->
 
 
       jit.check()
-      jit.step()
+      moved = jit.step()
       jit.check()
+
+      if !moved
+        json = jit.toJSON()
+        j2 = new Jit json
+        assert !j2.step(), 'World erroneously stable'
 
       # The copy and the original should now match
       #if !justCollidedStates

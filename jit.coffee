@@ -297,6 +297,7 @@ BlobFiller = (type, buffer) ->
               assert v2 != v
             else if type is 'shuttle'
               assert !shuttleConnects v, d
+              assert b.pushEdges.has x, y, d if v & SHUTTLE
 
 # Super simple module to get the engine at an arbitrary grid cell (x, y).
 EngineGrid = (grid, engines) ->
@@ -592,7 +593,13 @@ FillKeys = (baseGrid, shuttleStates, shuttleGrid) ->
 Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
   # The first step to calculating regions is finding similar cells. Similar
   # cells are neighboring cells which will always (come hell or high water)
-  # contain the same regions.
+  # contain the same regions. (And same pressure value)
+  #
+  # Eg:
+  # **********
+  # *123S0000*
+  # *123S*****
+  # ******
   #
   # This is very similar to shuttles, but instead of flood filling on connected
   # shuttle cells, we'll connect cells which have the same FillKey.
@@ -978,6 +985,14 @@ GroupConnections = (groups) ->
 # in a single set of shuttle states. For example, a tunnel with a shuttle in it
 # will have regions to connect the groups on either side of the shuttle.
 #
+# *******
+# *1111S*
+# *******
+# but
+# *******
+# *22S33*
+# *******
+#
 # Regions only connect groups which have the same shuttle key. That is, groups
 # which depend on exactly the same set of shuttle states.
 Regions = (fillKeys, groups, groupConnections) ->
@@ -1230,12 +1245,12 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
         shuttles.delete shuttle, shuttle.currentState
 
 
-Zones = (shuttles, regions, currentStates) ->
+Zones = (shuttles, fillKeys, regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
   # shuttle states.  These are constantly destroyed & regenerated as shuttles
   # move around.
 
-  zones = new Set # This set may be redundant.
+  #zones = new Set # This set may be redundant.
   zoneForRegion = new Map # region -> zone
 
   # For garbage collection. If the state of any of these shuttles changes, the
@@ -1262,7 +1277,7 @@ Zones = (shuttles, regions, currentStates) ->
     return unless z?.used
     log 'deleting zone', z._id
     z.used = false
-    zones.delete z
+    #zones.delete z
     watch.signal z
 
   makeZone = (r0) ->
@@ -1272,15 +1287,16 @@ Zones = (shuttles, regions, currentStates) ->
       used: true
       pressure: 0
       fixed: true
+      filled: no
 
       # _debug_regions: new Set # For debugging.
 
-    log zone._id, ': makezone from', r0._id
+    log zone._id, ': makezone from', r0?._id
 
     # Set of engines inside the zone
     engines = new Set
 
-    util.fillGraph r0, (r, hmm) ->
+    if r0 then util.fillGraph r0, (r, hmm) ->
       log 'zone fillGraph', r._id #, zoneForRegion.get(r)
       assert !zoneForRegion.get(r)?.used
       zoneForRegion.set r, zone
@@ -1311,9 +1327,20 @@ Zones = (shuttles, regions, currentStates) ->
         hmm r if r
 
 
-    zones.add zone
+    #zones.add zone
     zone
 
+  makeZoneUnderShuttle = (shuttle) ->
+    # This is used when two shuttles abut one another. We need to make the
+    # shuttle dirty if its adjacent shuttle moves. (smallturtle test)
+    # For that we'll use a sort of dummy zone that doesn't contain any regions,
+    # but which will be wiped when the dependant shuttle moves.
+    #
+    # Could reuse these, but it probably doesn't matter for most machines (?)
+    zone = makeZone null
+    zonesDependingOnShuttle.getDef(shuttle).add zone
+    zone.filled = true
+    return zone
 
   watch: watch
 
@@ -1325,7 +1352,21 @@ Zones = (shuttles, regions, currentStates) ->
 
   getZoneForGroup: (group) ->
     r = regions.get group, currentStates.map
-    return if r is null then null else @getZoneForRegion r
+    return @getZoneForRegion r if r != null
+
+    # The region is filled. Figure out which shuttle did it. (We could probably
+    # pass this back from regions.get to avoid this calculation, but its
+    # probably not a big deal.)
+    filledStates = fillKeys.getFilledStates group.fillKey
+
+    blockingShuttle = null
+    group.shuttles.forEach (s) ->
+      state = currentStates.map.get s
+      if filledStates.has state
+        assert.equal blockingShuttle, null # ... right?
+        blockingShuttle = s
+    assert blockingShuttle
+    return makeZoneUnderShuttle blockingShuttle
 
   checkEmpty: ->
     assert.strictEqual 0, zones.size
@@ -1367,7 +1408,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       blocksShuttles.delete s
 
   zones.watch.on (z) ->
-    log 'zw', z._id
+    log 'zw', z._id, z
     # A zone was deleted. Set any relevant shuttles to dirty.
     if (set = shuttlesForZone.get z)
       log 'zones watch', z._id
@@ -1391,12 +1432,11 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     setDirty state.shuttle, 'state was deleted'
 
   setDirty = (shuttle, reason) ->
-    #assert shuttle.used, "Tried to set an unused shuttle dirty"
     if dirty.has shuttle
-      #log "XXXDirty #{shuttle.id} because #{reason}" if reason
+      log "XXXDirty #{shuttle.id} because #{reason}" if reason
       return
 
-    log "setDirty #{shuttle.id} because #{reason}" if reason
+    console.log "setDirty #{shuttle.id} because #{reason}" if reason
 
     log '+ dirty shuttle', shuttle
     if (deps = shuttleZoneDeps.get shuttle)
@@ -1431,7 +1471,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       actuallyClean = false if !z.used
 
     if !actuallyClean
-      log "NOT CLEANING #{shuttle.id} - zones changed"
+      console.log "NOT CLEANING #{shuttle.id} - zones changed"
       return
 
     # A dirty shuttle didn't move.
@@ -1441,7 +1481,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       shuttlesForZone.getDef(z).add shuttle
     shuttleZoneDeps.set shuttle, deps
 
-    log 'setCleanDeps', shuttle.id, blocked.x?.id, blocked.y?.id
+    console.log 'setCleanDeps', shuttle.id, blocked.x?.id, blocked.y?.id
     if (b = blocked.x)
       blocksShuttles.getDef(b).add shuttle
       shuttle.blockedX = b
@@ -1532,7 +1572,7 @@ module.exports = Jit = (rawGrid) ->
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
   currentStates = CurrentStates shuttles, stateForce, shuttleStates
-  zones = Zones shuttles, regions, currentStates
+  zones = Zones shuttles, fillKeys, regions, currentStates
   CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
   dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
@@ -1562,18 +1602,17 @@ module.exports = Jit = (rawGrid) ->
       log 'calculating pressure in group', group
       assert group.used
       zone = zones.getZoneForGroup group
-      # Zone is null if the group is filled.
-      return if zone is null
-      assert zone.used
-      log 'pressure', zone.pressure
-      deps.add zone
+      assert zone and zone.used
 
+      log 'pressure', zone.pressure if zone.pressure
+
+      deps.add zone
       impulse -= mult * zone.pressure
 
     return impulse
 
   tryMove = (shuttle, state, impulse, blocked, isTop) ->
-    log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
+    console.log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
     return null unless impulse
 
     dir = if impulse < 0
@@ -1611,14 +1650,14 @@ module.exports = Jit = (rawGrid) ->
   impulse = []
   stepCount = 1
 
-  step: ->
-    log "------------ STEP #{stepCount++} ------------"
+  step: -> # returns true if something moves.
+    console.log "------------ STEP #{stepCount++} ------------"
     #shuttles.forEach (s) -> console.log(s.blockedBy)
     @calcPressure()
-    @update()
+    return @update()
 
   calcPressure: ->
-    log 'step 1) calculating pressure'
+    console.log 'step 1) calculating pressure'
     shuttles.flush()
     # shuttlesToMove.length = dependancies.length = impulse.length = 0
 
@@ -1644,14 +1683,14 @@ module.exports = Jit = (rawGrid) ->
       dependancies.push deps = new Set
       impulse.push if fx then calcImpulse fx, deps else 0
       impulse.push if fy then calcImpulse fy, deps else 0
-      log 'impulse', impulse[impulse.length - 2], impulse[impulse.length - 1]
+      console.log 'impulse', impulse[impulse.length - 2], impulse[impulse.length - 1]
 
     return !!shuttlesToMove.length
 
   update: ->
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
-    log 'step 2) update - moving shuttles'
+    console.log 'step 2) update - moving shuttles'
 
     somethingMoved = no
     currentStates.beginTxn()
@@ -1674,7 +1713,7 @@ module.exports = Jit = (rawGrid) ->
         next = tryMove shuttle, state, yImpulse, blocked, yes if !next
 
       if next
-        log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
+        console.log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
         currentStates.set shuttle, next
         Jit.stats.moves++
         somethingMoved = yes
@@ -1798,6 +1837,8 @@ module.exports = Jit = (rawGrid) ->
     m.stats?() for k, m of modules
     return
 
+  setQuiet: (v = no) -> log.quiet = v
+
 Jit.stats =
   moves: 0
   checks: 0
@@ -1820,6 +1861,9 @@ parseFile = exports.parseFile = (filename, opts) ->
   delete data.th
   jit = new Jit data, opts
 
+  jit.modules.shuttles.forEach (s) ->
+    console.log "Shuttle #{s.id} has points", s.points
+
   jit.printGrid()
   #util.printGrid util.gridExtents(jit.grid), jit.grid
 
@@ -1827,11 +1871,21 @@ parseFile = exports.parseFile = (filename, opts) ->
 
   if !torture
     for [1..10]
-      jit.step()
+      moved = jit.step()
       jit.printGrid()
-      #console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
-      #jit.modules.shuttles.forEach (s) =>
-      #  console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
+
+      if !moved # If we're stuck make sure its for real.
+        json = jit.toJSON()
+        j2 = new Jit json
+        assert !j2.step(), 'World erroneously stable'
+
+        console.log '-> World stable.'
+        break
+
+      console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
+      jit.modules.shuttles.forEach (s) =>
+        if !jit.modules.dirtyShuttles.data.has s
+          console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
 
     log '-----'
     #jit.grid.set 5, 2, null
@@ -1839,6 +1893,6 @@ parseFile = exports.parseFile = (filename, opts) ->
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
-  log.quiet = no
+  log.quiet = yes
   parseFile filename
   console.log Jit.stats
