@@ -134,13 +134,18 @@ ShuttleBuffer = ->
       # Important we do this after signalling - since there might be a shuttle
       # here to delete.
       return if buffer.get(x, y) is v
-      for {dx, dy},d in DIRS when shuttleConnects v, d
+      for {dx, dy},d in DIRS
+        connects = shuttleConnects v, d
         x2 = x+dx; y2 = y+dy
         v2 = buffer.get x2, y2
         if v2
           # Weld adjacent shuttle cells to the new cell.
-          if !shuttleConnects v2, (d2 = util.oppositeDir d)
-            v2 |= 1<<d2
+          connects2 = shuttleConnects v2, (d2 = util.oppositeDir d)
+          if connects != connects2
+            if connects
+              v2 |= 1<<d2
+            else
+              v2 &= ~(1<<d2)
             buffer.set x2, y2, v2
         else
           # Nothing here. Don't connect the new cell.
@@ -1372,7 +1377,6 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     return makeZoneUnderShuttle blockingShuttle
 
   checkEmpty: ->
-    assert.strictEqual 0, zones.size
     assert.strictEqual 0, zoneForRegion.size
 
 
@@ -1795,9 +1799,7 @@ module.exports = Jit = (rawGrid) ->
   set: set # set(x, y, bv, sv)
   get: (layer, x, y) ->
     switch layer
-      when 'shuttles'
-        shuttles.flushAt x, y
-        shuttleGrid.getValue x, y
+      when 'shuttles' then shuttleBuffer.data.get(x, y) or shuttleGrid.getValue x, y
       when 'base' then baseGrid.get x, y
       else throw Error "No such layer #{layer}"
 
