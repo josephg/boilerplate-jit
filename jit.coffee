@@ -250,8 +250,6 @@ BlobFiller = (type, buffer) ->
 
         if type is 'shuttle' and v & SHUTTLE and (!v2 or !(v2 & SHUTTLE) or !shuttleConnects(v, d))
           @pushEdges.add x, y, d
-        else
-          console.log dx, dy, d, type, v, v2
 
     assert @size
     assert @pushEdges.size is 0 or @pushEdges.size >= 4 if type is 'shuttle'
@@ -1252,7 +1250,6 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
       if (shuttle = shuttleGrid.getShuttle x+dx, y+dy)
         shuttles.delete shuttle, shuttle.currentState
 
-
 Zones = (shuttles, fillKeys, regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
   # shuttle states.  These are constantly destroyed & regenerated as shuttles
@@ -1273,6 +1270,7 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     zoneForRegion.delete r
 
   deleteZonesWithShuttle = (shuttle) ->
+    log 'deleteZonesWithShuttle', shuttle
     # Note that zoneForRegion doesn't get cleared here. We'll just leave an old
     # zone kicking around assuming we'll replace it soon anyway.
     zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
@@ -1282,6 +1280,7 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
   currentStates.watch.on deleteZonesWithShuttle
 
   deleteZone = (z) ->
+    log 'delete zone', z
     return unless z?.used
     log 'deleting zone', z._id
     z.used = false
@@ -1338,7 +1337,9 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     #zones.add zone
     zone
 
-  makeZoneUnderShuttle = (shuttle) ->
+  watch: watch
+
+  makeZoneUnderShuttle: (shuttle) ->
     # This is used when two shuttles abut one another. We need to make the
     # shuttle dirty if its adjacent shuttle moves. (smallturtle test)
     # For that we'll use a sort of dummy zone that doesn't contain any regions,
@@ -1349,8 +1350,6 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     zonesDependingOnShuttle.getDef(shuttle).add zone
     zone.filled = true
     return zone
-
-  watch: watch
 
   getZoneForRegion: (region) ->
     assert region
@@ -1374,7 +1373,7 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
         assert.equal blockingShuttle, null # ... right?
         blockingShuttle = s
     assert blockingShuttle
-    return makeZoneUnderShuttle blockingShuttle
+    return @makeZoneUnderShuttle blockingShuttle
 
   checkEmpty: ->
     assert.strictEqual 0, zoneForRegion.size
@@ -1430,7 +1429,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       log "XXXDirty #{shuttle.id} because #{reason}" if reason
       return
 
-    console.log "setDirty #{shuttle.id} because #{reason}" if reason
+    log "setDirty #{shuttle.id} because #{reason}" if reason
 
     log '+ dirty shuttle', shuttle
     if (deps = shuttleZoneDeps.get shuttle)
@@ -1586,8 +1585,8 @@ module.exports = Jit = (rawGrid) ->
 
     return impulse
 
-  tryMove = (shuttle, state, impulse, isTop) ->
-    console.log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
+  tryMove = (shuttle, state, impulse, deps, isTop) ->
+    log 'trymove s', shuttle.id, 'impulse', impulse, 'istop', isTop
     return null unless impulse
 
     dir = if impulse < 0
@@ -1597,7 +1596,6 @@ module.exports = Jit = (rawGrid) ->
       if isTop then DOWN else RIGHT
 
     moved = no
-    b = null
     while impulse
       # We can't move any further in this direction.
       unless (next = shuttleStates.getStateNear state, dir)
@@ -1605,7 +1603,10 @@ module.exports = Jit = (rawGrid) ->
         break
 
       # This shuttle is about to collide into another shuttle.
-      if (b = shuttleOverlap.willOverlap shuttle, next)
+      if (block = shuttleOverlap.willOverlap shuttle, next)
+        # This only returns one of the overlapping shuttles, but because we'll
+        # only move if all of them are out of the way that should be fine.
+        deps.add zones.makeZoneUnderShuttle block
         break
 
       state = next
@@ -1626,13 +1627,13 @@ module.exports = Jit = (rawGrid) ->
   stepCount = 1
 
   step: -> # returns true if something moves.
-    console.log "------------ STEP #{stepCount++} ------------"
+    log "------------ STEP #{stepCount++} ------------"
     #shuttles.forEach (s) -> console.log(s.blockedBy)
     @calcPressure()
     return @update()
 
   calcPressure: ->
-    console.log 'step 1) calculating pressure'
+    log 'step 1) calculating pressure'
     shuttles.flush()
     # shuttlesToMove.length = dependancies.length = impulse.length = 0
 
@@ -1658,14 +1659,14 @@ module.exports = Jit = (rawGrid) ->
       dependancies.push deps = new Set
       impulse.push if fx then calcImpulse fx, deps else 0
       impulse.push if fy then calcImpulse fy, deps else 0
-      console.log 'impulse', impulse[impulse.length - 2], impulse[impulse.length - 1]
+      log 'impulse', impulse[impulse.length - 2], impulse[impulse.length - 1]
 
     return !!shuttlesToMove.length
 
   update: ->
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
-    console.log 'step 2) update - moving shuttles'
+    log 'step 2) update - moving shuttles'
 
     somethingMoved = no
     currentStates.beginTxn()
@@ -1677,23 +1678,23 @@ module.exports = Jit = (rawGrid) ->
       yImpulse = impulse[i*2+1]
 
       state = shuttle.currentState
+      deps = dependancies[i]
 
       if abs(yImpulse) >= abs(xImpulse)
-        next = tryMove shuttle, state, yImpulse, yes
-        next = tryMove shuttle, state, xImpulse, no if !next
+        next = tryMove shuttle, state, yImpulse, deps, yes
+        next = tryMove shuttle, state, xImpulse, deps, no if !next
       else
-        next = tryMove shuttle, state, xImpulse, no
-        next = tryMove shuttle, state, yImpulse, yes if !next
+        next = tryMove shuttle, state, xImpulse, deps, no
+        next = tryMove shuttle, state, yImpulse, deps, yes if !next
 
       if next
-        console.log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
+        log '----> shuttle', shuttle.id, 'moved to', next.dx, next.dy
         currentStates.set shuttle, next
         Jit.stats.moves++
         somethingMoved = yes
         # The shuttle is still dirty - so we're kinda done here.
       else
         # The shuttle didn't move.
-        deps = dependancies[i]
         log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
         dirtyShuttles.setCleanDeps shuttle, deps
         #log 'deps', deps

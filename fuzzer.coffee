@@ -6,7 +6,7 @@ Jit = require './jit'
 log = require './log'
 util = require './util'
 
-mersenne.seed 2
+mersenne.seed 6
 
 randomValueFrom = (vals) ->
   totalWeight = 0
@@ -63,6 +63,7 @@ printPressure = (pressureGrid) ->
 
 debugPrint = ->
   jit.printGrid()
+  console.log JSON.stringify jit.toJSON()
 
 fuzz = ->
   log.quiet = yes
@@ -70,13 +71,14 @@ fuzz = ->
   for iter in [1..10000]
     #log.quiet = false
     debugPrint() unless log.quiet
+    #debugPrint() if iter >= 950
     #jit.check()
     for [1..2]
       x = mersenne.rand() % SIZE
       y = mersenne.rand() % SIZE
       bv = randomBase()
       sv = randomShuttle bv
-      log 'set', x, y, bv, sv
+      #console.log 'set', x, y, bv, sv #if iter >= 950
 
       #sim.set x, y, v
       jit.set x, y, bv, sv
@@ -138,6 +140,7 @@ fuzz = ->
       log '-------------'
       ###
       debugPrint()
+      console.log JSON.stringify jit.toJSON()
       log '----'
       #copy.printGrid()
       throw e
