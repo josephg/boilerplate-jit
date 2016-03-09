@@ -19,14 +19,14 @@ log.quiet = yes
 
 abs = (x) -> if x >= 0 then x else -x
 
-SHUTTLE     = 0x80
-THINSHUTTLE = 0x40
+SHUTTLE     = 0x40
+THINSHUTTLE = 0x80
 
 normalizeShuttleV = (v) ->
-  # Shuttle values use the first 4 bits to represent the value itself. (So far
-  # 0 for empty, 0b1 for shuttle, 0b01 for thinshuttle)
+  # Shuttle values use the highest 2 bits for the value (0x80 and 0x40 for
+  # shuttle / thinshuttle).
   #
-  # The next 4 bits describe the connectivity with adjacent cells. The
+  # The low 4 bits describe the connectivity with adjacent cells. The
   # connectivity values must always be consistent with adjacent cells. The
   # connectivity on a newly set shuttle cell takes precendence.
   return v if typeof v is 'number'
