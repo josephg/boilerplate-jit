@@ -41,8 +41,8 @@ insNum = exports.insNum = do ->
   (v) -> map[v] ? -1
 
 
-SHUTTLE     = 0x80
-THINSHUTTLE = 0x40
+SHUTTLE     = 0x40
+THINSHUTTLE = 0x80
 
 shuttleStr = exports.shuttleStr = (v) ->
   if (v & SHUTTLE)
