@@ -45,6 +45,7 @@ SHUTTLE     = 0x40
 THINSHUTTLE = 0x80
 
 shuttleStr = exports.shuttleStr = (v) ->
+  return v if typeof v is 'string'
   if (v & SHUTTLE)
     'shuttle'
   else if (v & THINSHUTTLE)
