@@ -342,7 +342,6 @@ jsonExtents = (grid) ->
 
   if grid.base
     scan grid.base
-    scan grid.shuttles
   else
     scan grid
 
