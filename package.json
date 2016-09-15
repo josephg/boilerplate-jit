@@ -1,7 +1,7 @@
 {
   "name": "boilerplate-jit",
   "version": "2.1.0",
-  "description": "",
+  "description": "This is a realtime FRP compiler for [boilerplate](http://josephg.com/boilerplate)! Its fully operational - the version of boilerplate running live uses this code.",
   "main": "index.js",
   "dependencies": {
     "chalk": "^1.1.1",
@@ -18,12 +18,18 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/josephg/boilerplate-jit.git"
+    "url": "git+https://github.com/josephg/boilerplate-jit.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/josephg/boilerplate-jit/issues"
   },
-  "homepage": "https://github.com/josephg/boilerplate-jit"
+  "homepage": "https://github.com/josephg/boilerplate-jit",
+  "readme": "# Boilerplate JIT\n\nThis is a realtime FRP compiler for\n[boilerplate](http://josephg.com/boilerplate)! Its fully operational - the\nversion of boilerplate running live uses this code.\n\nIn many ways its a rewrite of the aborted [boilerplate\ncompiler](https://github.com/josephg/boilerplate-compiler). It has two main\nchanges:\n\n- Unlike the compiler, boilerplate-jit can handle adjacent shuttles (and\npotentially adjacent shuttles). Shuttles are merged just like the\nsimulator, making it fully\n[spec](https://github.com/josephg/boilerplate-sim)-compliant.\n- The jit can't actually output javascript. Instead the simulation runs\nin-memory. (So actually running a boilerplate sim using this is about 10x\nslower than the compiler).\n- Everything is just-in-time. If you have a huge boilerplate world, you can\nupdate any small part of the space and have everything update live.\n\nThe JIT also supports bundled ribbon cable, although its not an official feature in the web UI.\n\n\n---\n\n# License\n\n> Standard ISC License\n\nCopyright (c) 2011-2014, Joseph Gentle, Jeremy Apthorp\n\nPermission to use, copy, modify, and/or distribute this software for any\npurpose with or without fee is hereby granted, provided that the above\ncopyright notice and this permission notice appear in all copies.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH\nREGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND\nFITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,\nINDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM\nLOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR\nOTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR\nPERFORMANCE OF THIS SOFTWARE.\n\n",
+  "readmeFilename": "README.md",
+  "gitHead": "51d04be27d07588ac9a3fd6376c126082572fb13",
+  "_id": "boilerplate-jit@2.1.0",
+  "_shasum": "1d807c06874195f7f9fb86a06060f0301303da59",
+  "_from": "boilerplate-jit@2.1.0"
 }

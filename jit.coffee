@@ -1540,17 +1540,18 @@ module.exports = Jit = (rawGrid) ->
 
   shuttleStates = ShuttleStates baseGrid, shuttles
   shuttleGrid = ShuttleGrid shuttleStates
+  CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
+
   fillKeys = FillKeys baseGrid, shuttleStates, shuttleGrid
   groups = Groups baseGrid, engines, engineGrid, shuttleGrid, fillKeys
   stateForce = StateForce baseGrid, shuttleStates, shuttleGrid, groups
+  currentStates = CurrentStates shuttles, stateForce, shuttleStates
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
-  currentStates = CurrentStates shuttles, stateForce, shuttleStates
   zones = Zones shuttles, fillKeys, regions, currentStates
-  CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
-  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
+  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
   modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
