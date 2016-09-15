@@ -224,6 +224,8 @@ BlobFiller = (type, buffer) ->
         @points.forEach (x, y, v) -> fn x+dx, y+dy, v
       @blockedX = @blockedY = null
 
+    @topleft = {x, y} # leftmost cell in the top row
+
     blobs.add this
 
     # The third parameter is really just cached via the fill mechanism... but
@@ -233,6 +235,10 @@ BlobFiller = (type, buffer) ->
 
       @size++
       @points.set x, y, v
+
+      if y < @topleft.y || (y == @topleft.y && x < @topleft.x)
+        @topleft.x = x
+        @topleft.y = y
 
       for {dx, dy},d in DIRS
         x2 = x+dx; y2 = y+dy
@@ -1469,7 +1475,20 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
     log 'setCleanDeps', shuttle.id
 
-  forEach: (fn) -> dirty.forEach fn
+  forEach: (fn) ->
+    # We iterate through all these in an arbitrary but stable order so
+    # the output of a world is stable based on its grid
+    Array.from(dirty).sort((a, b) ->
+      # Could cache the topleft for each shuttle state, but I don't think it
+      # would buy us anything.
+      ay = a.topleft.y + a.currentState.dy
+      _by = b.topleft.y + b.currentState.dy # 'by' is a keyword
+      return ay - _by if ay != _by
+
+      ax = a.topleft.x + a.currentState.dx
+      bx = b.topleft.x + b.currentState.dx
+      return ax - bx
+    ).forEach fn
 
   check: (invasive) ->
     # Dirty shuttles aren't listed in shuttle zone deps.
