@@ -1527,48 +1527,16 @@ ShuttleOverlap = (shuttleStates, shuttleGrid, currentStates) ->
     log 'overlap', overlap, shuttle1.id
     return overlap
 
-
-module.exports = Jit = (rawGrid) ->
-  baseGrid = BaseGrid()
-
-  engineBuffer = BaseBuffer baseGrid, ['positive', 'negative']
-  engines = BlobFiller 'engine', engineBuffer
-  engineGrid = EngineGrid baseGrid, engines
-
-  shuttleBuffer = ShuttleBuffer()
-  shuttles = BlobFiller 'shuttle', shuttleBuffer
-
-  shuttleStates = ShuttleStates baseGrid, shuttles
-  shuttleGrid = ShuttleGrid shuttleStates
-  CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
-
-  fillKeys = FillKeys baseGrid, shuttleStates, shuttleGrid
-  groups = Groups baseGrid, engines, engineGrid, shuttleGrid, fillKeys
-  stateForce = StateForce baseGrid, shuttleStates, shuttleGrid, groups
-  currentStates = CurrentStates shuttles, stateForce, shuttleStates
-  groupConnections = GroupConnections groups
-  regions = Regions fillKeys, groups, groupConnections
-  zones = Zones shuttles, fillKeys, regions, currentStates
-
-  shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
-  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
-
-  modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
-    shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
-    groupConnections, regions, currentStates, zones, dirtyShuttles,
-    shuttleOverlap}
-
-
-  set = (x, y, bv, sv) ->
-    baseGrid.set x, y, bv
-    shuttleBuffer.set x, y, sv
-
-  setGrid = (rawGrid) -> util.deserialize rawGrid, no, set
-
-  setGrid rawGrid
-
-
-  # ------ Step stuff ------
+Step = (modules) ->
+  {
+    zones,
+    shuttles,
+    dirtyShuttles,
+    shuttleStates,
+    stateForce,
+    currentStates,
+    shuttleOverlap
+  } = modules
 
   calcImpulse = (f, deps) ->
     impulse = 0
@@ -1627,13 +1595,7 @@ module.exports = Jit = (rawGrid) ->
   impulse = []
   stepCount = 1
 
-  step: -> # returns true if something moves.
-    log "------------ STEP #{stepCount++} ------------"
-    #shuttles.forEach (s) -> console.log(s.blockedBy)
-    @calcPressure()
-    return @update()
-
-  calcPressure: ->
+  calcPressure = ->
     log 'step 1) calculating pressure'
     shuttles.flush()
     # shuttlesToMove.length = dependancies.length = impulse.length = 0
@@ -1664,7 +1626,7 @@ module.exports = Jit = (rawGrid) ->
 
     return !!shuttlesToMove.length
 
-  update: ->
+  update = ->
     # Step 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
     log 'step 2) update - moving shuttles'
@@ -1706,16 +1668,58 @@ module.exports = Jit = (rawGrid) ->
     shuttlesToMove.length = dependancies.length = impulse.length = 0
     return somethingMoved
 
+  return -> # returns true if something moves.
+    log "------------ STEP #{stepCount++} ------------"
+    #shuttles.forEach (s) -> console.log(s.blockedBy)
+    calcPressure()
+    return update()
+
+
+module.exports = Jit = (rawGrid) ->
+  baseGrid = BaseGrid()
+
+  engineBuffer = BaseBuffer baseGrid, ['positive', 'negative']
+  engines = BlobFiller 'engine', engineBuffer
+  engineGrid = EngineGrid baseGrid, engines
+
+  shuttleBuffer = ShuttleBuffer()
+  shuttles = BlobFiller 'shuttle', shuttleBuffer
+
+  shuttleStates = ShuttleStates baseGrid, shuttles
+  shuttleGrid = ShuttleGrid shuttleStates
+  CollapseDetector baseGrid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid
+
+  fillKeys = FillKeys baseGrid, shuttleStates, shuttleGrid
+  groups = Groups baseGrid, engines, engineGrid, shuttleGrid, fillKeys
+  stateForce = StateForce baseGrid, shuttleStates, shuttleGrid, groups
+  currentStates = CurrentStates shuttles, stateForce, shuttleStates
+  groupConnections = GroupConnections groups
+  regions = Regions fillKeys, groups, groupConnections
+  zones = Zones shuttles, fillKeys, regions, currentStates
+
+  shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
+  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
+
+  modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
+    shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
+    groupConnections, regions, currentStates, zones, dirtyShuttles,
+    shuttleOverlap, step}
+
+  step = Step modules
+
+  set = (x, y, bv, sv) ->
+    baseGrid.set x, y, bv
+    shuttleBuffer.set x, y, sv
+
+  setGrid = (rawGrid) -> util.deserialize rawGrid, no, set
+
+  setGrid rawGrid
+
+
 
   baseGrid: baseGrid
   modules: modules
 
-  moveShuttle: (shuttle, state) ->
-    # Try to move the named shuttle to the specified state immediately.
-    #
-    # Be careful calling this while we're in step().
-    if !shuttleOverlap.willOverlap shuttle, state
-      currentStates.set shuttle, state
 
   getZoneContents: (x, y, c) ->
     # This is used by the UI to shade the region the mouse is over.
@@ -1736,6 +1740,16 @@ module.exports = Jit = (rawGrid) ->
           hmm r
 
     return {points, engines}
+
+
+  moveShuttle: (shuttle, state) ->
+    # Try to move the named shuttle to the specified state immediately.
+    #
+    # Be careful calling this while we're in step().
+    if !shuttleOverlap.willOverlap shuttle, state
+      currentStates.set shuttle, state
+
+  step: step
 
   check: (invasive) ->
     # shuttles.check invasive
