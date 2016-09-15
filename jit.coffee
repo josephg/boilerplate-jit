@@ -1475,20 +1475,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
     log 'setCleanDeps', shuttle.id
 
-  forEach: (fn) ->
-    # We iterate through all these in an arbitrary but stable order so
-    # the output of a world is stable based on its grid
-    Array.from(dirty).sort((a, b) ->
-      # Could cache the topleft for each shuttle state, but I don't think it
-      # would buy us anything.
-      ay = a.topleft.y + a.currentState.dy
-      _by = b.topleft.y + b.currentState.dy # 'by' is a keyword
-      return ay - _by if ay != _by
-
-      ax = a.topleft.x + a.currentState.dx
-      bx = b.topleft.x + b.currentState.dx
-      return ax - bx
-    ).forEach fn
+  forEach: (fn) -> dirty.forEach fn
 
   check: (invasive) ->
     # Dirty shuttles aren't listed in shuttle zone deps.
@@ -1569,6 +1556,8 @@ Step = (modules) ->
       log 'pressure', zone.pressure if zone.pressure
 
       deps.add zone
+      # note `-` because we're calculating it from the other side of the
+      # shuttle edge.
       impulse -= mult * zone.pressure
 
     return impulse
@@ -1619,7 +1608,7 @@ Step = (modules) ->
     shuttles.flush()
     # shuttlesToMove.length = dependancies.length = impulse.length = 0
 
-    # Step 1: Calculate the impulse on all shuttles.
+    # Part 1: Calculate the impulse on all shuttles.
     # shuttles.forEach (shuttle) ->
     dirtyShuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle
@@ -1646,7 +1635,7 @@ Step = (modules) ->
     return !!shuttlesToMove.length
 
   update = ->
-    # Step 2: Try and move all the shuttles. The order here can introduce
+    # Part 2: Try and move all the shuttles. The order here can introduce
     # nondeterminism, but its not super important.
     log 'step 2) update - moving shuttles'
 
