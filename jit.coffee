@@ -1547,26 +1547,6 @@ ShuttleOverlap = (shuttleStates, shuttleGrid) ->
       fn state2.shuttle, state2 if state2.shuttle.currentState is state2
 
 
-  ###
-  willOverlap: (shuttle1, state1) ->
-    # Would the named shuttle overlap with something if it enters the named state?
-    # Returns an arbitrary overlapping shuttle if one is found, else null.
-    overlap = null
-    overlappingStates.getAll(state1)?.forEach (state2) ->
-      shuttle2 = state2.shuttle
-      # I'm going to check both the state last frame (currentState) as well as
-      # the state we're moving into. This is to remove the visible
-      # nondeterminism of two adjacent shuttles moving together where sometimes
-      # they need a gap and sometimes they don't.
-      #
-      # By checking both currentState and currentStates.getImmediate we're
-      # forcing a gap when moving always.
-      if shuttle2.currentState is state2 or currentStates.getImmediate(shuttle2) is state2
-        overlap = shuttle2
-    log 'overlap', overlap, shuttle1.id
-    return overlap
-  ###
-
 Step = (modules) ->
   {
     zones,
@@ -1930,24 +1910,19 @@ module.exports = Jit = (rawGrid) ->
     return {points, engines}
 
 
+  # Try to move the named shuttle to the specified state immediately.
+  #
+  # Be careful calling this while we're in step().
   moveShuttle: (shuttle, state) ->
-    # Try to move the named shuttle to the specified state immediately.
-    #
-    # Be careful calling this while we're in step().
-    #if !shuttleOverlap.willOverlap shuttle, state
-    #  currentStates.set shuttle, state
+    overlap = false
+    shuttleOverlap.forEach state, -> overlap = true
+    # TODO: push the pesky shuttles out of the way using the monster code in step.
+    if !overlap
+      currentStates.set shuttle, state
 
   step: step
 
   check: (invasive) ->
-    # shuttles.check invasive
-    # #engines.check invasive
-    # engineGrid.check invasive
-    # shuttleGrid.check invasive
-    # groups.check invasive
-    # groupConnections.check invasive
-    # regions.check invasive
-    # dirtyShuttles.check invasive
     m.check?(invasive) for k, m of modules
 
     # Each shuttle should be on top of nothing
@@ -1955,17 +1930,6 @@ module.exports = Jit = (rawGrid) ->
       shuttle.eachCurrentPoint (x, y, v) ->
         baseV = baseGrid.get x, y
         assert baseV in ['nothing', 'bridge', 'ribbon', 'ribbonbridge']
-
-    # No two shuttles should be touching to each other and un-merged
-    ###
-    map = new Map2
-    shuttles.forEach (shuttle) ->
-      shuttle.eachCurrentPoint (x, y, v) ->
-        for {dx, dy} in DIRS
-          s2 = map.get(x+dx, y+dy)
-          assert !s2 || s2 == shuttle
-        map.set x, y, shuttle
-    ###
 
   checkEmpty: ->
     m.checkEmpty?() for k, m of modules
@@ -2022,13 +1986,6 @@ Jit.stats =
 # Jit.Buffer = BaseBuffer
 
 parseFile = exports.parseFile = (filename, opts) ->
-  torture =
-    if filename in ['-t', 'torture']
-      filename = 'simple.json'
-      yes
-    else
-      no
-
   fs = require 'fs'
   data = JSON.parse fs.readFileSync(filename, 'utf8').split('\n')[0]
   # Mmmm, resiliancy.
@@ -2042,29 +1999,27 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.printGrid()
   #util.printGrid util.gridExtents(jit.grid), jit.grid
 
-  jit.torture() if torture
+  for s in [1..10]
+    moved = jit.step()
+    console.log 'Step', s
+    jit.printGrid()
 
-  if !torture
-    for s in [1..10]
-      moved = jit.step()
-      console.log 'Step', s
-      jit.printGrid()
+    if !moved # If we're stuck make sure its for real.
+      log.quiet = true
+      json = jit.toJSON()
+      j2 = new Jit json
+      assert !j2.step(), 'World erroneously stable'
 
-      if !moved # If we're stuck make sure its for real.
-        #json = jit.toJSON()
-        #j2 = new Jit json
-        #assert !j2.step(), 'World erroneously stable'
+      console.log '-> World stable.'
+      break
 
-        console.log '-> World stable.'
-        break
+    console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
+    #jit.modules.shuttles.forEach (s) =>
+    #  if !jit.modules.dirtyShuttles.data.has s
+    #    console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
 
-      console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
-      #jit.modules.shuttles.forEach (s) =>
-      #  if !jit.modules.dirtyShuttles.data.has s
-      #    console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
-
-    log '-----'
-    #jit.grid.set 5, 2, null
+  log '-----'
+  #jit.grid.set 5, 2, null
 
 if require.main == module
   filename = process.argv[2]
