@@ -1314,7 +1314,6 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
   currentStates.watch.on deleteZonesWithShuttle
 
   deleteZone = (z) ->
-    log 'delete zone', z
     return unless z?.used
     log 'deleting zone', z._id
     z.used = false
@@ -1665,11 +1664,11 @@ Step = (modules) ->
     # Its super gross copying this code, but the other way would be to lookup
     # by key 'impulseX' and 'impulseY' and that'd be slow (I think). Eh.
     shuttlesX.sort (a, b) ->
-      impulseDiff = abs(a.impulseX) - abs(b.impulseX)
+      impulseDiff = abs(b.impulseX) - abs(a.impulseX)
       if (impulseDiff) then return impulseDiff
       else return compareByPosition a, b
     shuttlesY.sort (a, b) ->
-      impulseDiff = abs(a.impulseY) - abs(b.impulseY)
+      impulseDiff = abs(b.impulseY) - abs(a.impulseY)
       if (impulseDiff) then return impulseDiff
       else return compareByPosition a, b
 
@@ -1678,12 +1677,13 @@ Step = (modules) ->
   
 
   tryMove = (shuttle, isTop) ->
+    newTag = if isTop then tag else -tag
     # The shuttle has moved in the orthogonal direction. Discard.
-    return if shuttle.currentState.stepTag is -tag
+    return false if shuttle.currentState.stepTag is -newTag
 
     moved = no
     im = if isTop then shuttle.imYRem else shuttle.imXRem
-    return if !im # Happen if the pressure is consumed by opposing forces.
+    return false if !im # Happen if the pressure is consumed by opposing forces.
 
     mul = 1
     dir = if im < 0
@@ -1730,12 +1730,14 @@ Step = (modules) ->
         nextState = shuttleStates.getStateNear s.currentState, dir
 
         # 1. If a shuttle has hit a wall, stop.
-        if !nextState || nextState.stepTag == -tag
+        if !nextState || nextState.stepTag == -newTag
           log 'no state avaliable in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
           blocked = true
           break # damn I want a multilevel break here.
 
         shuttleOverlap.forEach nextState, (s2) ->
+          return blocked = true if s2.currentState.stepTag == -newTag
+
           # We've hit another shuttle.
           if !shuttleGlob.has s2
             shuttleGlob.add s2
@@ -1781,10 +1783,15 @@ Step = (modules) ->
       # 3. Push them all!
       im--
       for s2 in shuttleList
-        s2.currentState.stepTag = if isTop then tag else -tag
-
         nextState = shuttleStates.getStateNear s2.currentState, dir
         assert nextState
+
+        # We have to tag both places so we both leave a shadow and can't be moved ourselves now.
+        s2.currentState.stepTag = newTag
+        nextState.stepTag = newTag
+
+        log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
+        
         currentStates.set s2, nextState
         moved = yes
         if isTop then s2.imXRem = 0 else s2.imYRem = 0
@@ -1797,14 +1804,14 @@ Step = (modules) ->
 
       moved = yes
 
-    if isTop then assert.equal(shuttle.imYRem, im*mul) else assert.equal(shuttle.imXRem, im*mul)
+    if isTop then shuttle.imYRem = im*mul else shuttle.imXRem = im*mul
     log 'tryMove ->', moved
     return moved
 
 
   update = ->
     # Part 2: Try and move all the shuttles.
-    log 'step 2) update - moving shuttles', shuttlesX.length, shuttlesY.length
+    log 'step 2) update - moving shuttles', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
 
     numMoved = 0
     #currentStates.beginTxn()
@@ -2038,8 +2045,9 @@ parseFile = exports.parseFile = (filename, opts) ->
   jit.torture() if torture
 
   if !torture
-    for [1..10]
+    for s in [1..10]
       moved = jit.step()
+      console.log 'Step', s
       jit.printGrid()
 
       if !moved # If we're stuck make sure its for real.
@@ -2061,6 +2069,6 @@ parseFile = exports.parseFile = (filename, opts) ->
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
-  log.quiet = yes
+  log.quiet = process.argv[3] == '-q'
   parseFile filename
   console.log Jit.stats
