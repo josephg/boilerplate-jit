@@ -665,7 +665,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
         deleteGroup group
 
   deleteGroup = (group) ->
-    log group._id, ': deleting group', group
+    log group._id, ': deleting group', group._id
     assert group.used
 
     # Invalidate g!
@@ -883,7 +883,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
     if (force = stateForce.get state)
       stateForce.delete state
 
-      log 'deleteForce', state
+      log 'deleteForce', state.shuttle.id, state.dx, state.dy
 
       force.used = no
 
@@ -898,7 +898,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
       watch.signal state, force
 
   makeForce = (state) ->
-    log 'makeForce', state
+    log 'makeForce', state.shuttle.id, state.dx, state.dy
     assert state.shuttle.used
     assert state.valid
 
@@ -945,7 +945,7 @@ StateForce = (grid, shuttleStates, shuttleGrid, groups) ->
         else
           stateForGroup.getDef(group).add state
 
-    log '-> makeForce', force
+    #log '-> makeForce', force
     force
 
   watch: watch
@@ -1304,7 +1304,7 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     zoneForRegion.delete r
 
   deleteZonesWithShuttle = (shuttle) ->
-    log 'deleteZonesWithShuttle', shuttle
+    log 'deleteZonesWithShuttle', shuttle.id
     # Note that zoneForRegion doesn't get cleared here. We'll just leave an old
     # zone kicking around assuming we'll replace it soon anyway.
     zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
@@ -1465,7 +1465,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
     log "setDirty #{shuttle.id} because #{reason}" if reason
 
-    log '+ dirty shuttle', shuttle
+    log '+ dirty shuttle', shuttle.id
     if (deps = shuttleZoneDeps.get shuttle)
       # Clear dependancies.
       deps.forEach (z) ->
@@ -1588,7 +1588,7 @@ Step = (modules) ->
     impulse = 0
 
     f.forEach (mult, group) ->
-      log 'calculating pressure in group', group
+      #log 'calculating pressure in group', group
       assert group.used
       zone = zones.getZoneForGroup group
       assert zone and zone.used
@@ -1640,7 +1640,7 @@ Step = (modules) ->
     # Part 1: Calculate the impulse on all shuttles.
     shuttles.forEach (shuttle) ->
     #dirtyShuttles.forEach (shuttle) ->
-      log 'step() looking at shuttle', shuttle
+      log 'step() looking at shuttle', shuttle.id
       Jit.stats.checks++
       return if shuttle.held # Manually set from the UI.
 
@@ -1648,7 +1648,7 @@ Step = (modules) ->
       assert shuttle.used
       force = stateForce.get shuttle.currentState
       {x:fx, y:fy} = force
-      log 'step() looking at shuttle', shuttle.id, 'force', force
+      #log 'step() looking at shuttle', shuttle.id, 'force', force
 
       if (im = calcImpulse shuttle, fx)
         shuttle.imXRem = shuttle.impulseX = im
@@ -1692,6 +1692,8 @@ Step = (modules) ->
       if isTop then UP else LEFT
     else
       if isTop then DOWN else RIGHT
+
+    log 'tryMove shuttle', shuttle.id, 'im', im, util.DN[dir]
 
     shuttleList = [shuttle] # Kept sorted because iteration order is important.
     needSort = false
@@ -1802,7 +1804,7 @@ Step = (modules) ->
 
   update = ->
     # Part 2: Try and move all the shuttles.
-    log 'step 2) update - moving shuttles'
+    log 'step 2) update - moving shuttles', shuttlesX.length, shuttlesY.length
 
     somethingMoved = no
     #currentStates.beginTxn()
