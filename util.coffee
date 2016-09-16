@@ -19,6 +19,7 @@ chars =
   ribbon: chalk.yellow 'r'
   ribbonbridge: chalk.yellow.bgBlue 'r'
 
+# CSS order.
 UP=0; RIGHT=1; DOWN=2; LEFT=3
 DN = exports.DN =
   0: 'UP'
