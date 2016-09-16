@@ -1806,7 +1806,7 @@ Step = (modules) ->
     # Part 2: Try and move all the shuttles.
     log 'step 2) update - moving shuttles', shuttlesX.length, shuttlesY.length
 
-    somethingMoved = no
+    numMoved = 0
     #currentStates.beginTxn()
 
     # Walk along shuttlesX and shuttlesY together, taking whichever has more
@@ -1814,17 +1814,18 @@ Step = (modules) ->
     ix = iy = 0
     loop
       if ix == shuttlesX.length
-        somethingMoved ||= tryMove s, true for s in shuttlesY[iy...]
+        numMoved += tryMove s, true for s in shuttlesY[iy...]
         break
       if iy == shuttlesY.length
-        somethingMoved ||= tryMove s, false for s in shuttlesX[ix...]
+        log 'A'
+        numMoved += tryMove s, false for s in shuttlesX[ix...]
         break
 
       # Note > not >=.
       if (sx = shuttlesX[ix]).impulseX > (sy = shuttlesY[iy]).impulseY
-        ix++; somethingMoved ||= tryMove sx, false
+        ix++; numMoved += tryMove sx, false
       else
-        iy++; somethingMoved ||= tryMove sy, true
+        iy++; numMoved += tryMove sy, true
 
         #Jit.stats.moves++
 
@@ -1832,9 +1833,9 @@ Step = (modules) ->
 
     # TODO: Deps. Here?
 
-    log 'somethingMoved', somethingMoved
+    log 'moved', numMoved
     shuttlesX.length = shuttlesY.length = 0
-    return somethingMoved
+    return !!numMoved
 
 
 
