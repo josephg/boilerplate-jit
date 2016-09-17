@@ -1831,10 +1831,6 @@ Step = (modules) ->
     #dirtyShuttles.setCleanDeps shuttle, deps
     #log 'deps', deps
 
-
-
-
-
   return -> # returns true if something moves.
     tag++
     log "------------ STEP #{tag} ------------"
@@ -1871,7 +1867,7 @@ module.exports = Jit = (rawGrid) ->
   modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
     groupConnections, regions, currentStates, zones, dirtyShuttles,
-    shuttleOverlap, step}
+    shuttleOverlap}
 
   step = Step modules
 

@@ -41,7 +41,7 @@ describe 'jit', ->
           actual = s.toJSON()
           assert.gridEquals expected, actual, i
 
-  describe.skip 'from gendata', ->
+  describe 'from gendata', ->
     if !fs.existsSync "#{__dirname}/gendata"
       console.warn 'Note: Skipping checking previously generated data - data not found. Use gendata to generate'
       return

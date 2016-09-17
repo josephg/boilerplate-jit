@@ -6,14 +6,20 @@ Jit = require './jit'
 
 mersenne.seed 2
 
+randomShuttleCell = ->
+  val = (if mersenne.rand() % 2 then 0x40 else 0x80)
+  # 3/4 chance to try and connect.
+  for i in [0...4]
+    val |= (1<<i) if mersenne.rand() % 4 > 0
+  return val
+
 randomValue = do ->
   VALS = [
     null, 5
     'nothing', 10
     'positive', 1
     'negative', 1
-    'shuttle', 1
-    #'thinshuttle', 1
+    'shuttle', 2
     'bridge', 5
   ]
 
@@ -25,7 +31,7 @@ randomValue = do ->
       r -= VALS[i+1]
       break if r < 0
 
-    v
+    return if v is 'shuttle' then randomShuttleCell() else v
 
 DIR = 'gendata'
 fs.mkdirSync DIR if !fs.existsSync DIR
@@ -39,11 +45,13 @@ for i in [1..10]
     grid = base:{}, shuttles:{}
     for x in [0...SIZE] then for y in [0...SIZE]
       if (v = randomValue())
-        if v in ['shuttle', 'thinshuttle']
+        if typeof v is 'number'
           grid.base[[x,y]] = 'nothing'
           grid.shuttles[[x,y]] = v
         else
           grid.base[[x,y]] = v
+
+    #require('./util').printJSONGrid grid
 
     steps = []
     jit = new Jit grid
