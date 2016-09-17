@@ -242,7 +242,7 @@ BlobFiller = (type, buffer) ->
       #@stepTag = 0
       @impulseX = @impulseY = 0 # used to sort
       @imXRem = @imYRem = 0 # actually consumed when the shuttle moves
-      # Set of zones which, when deleted, will make the shuttle dirty again.
+      # Set of zones which, when deleted, will wake the shuttle
       @zoneDeps = new Set
       
 
@@ -1373,8 +1373,8 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
   watch: watch
 
   makeZoneUnderShuttle: (shuttle) ->
-    # This is used when two shuttles abut one another. We need to make the
-    # shuttle dirty if its adjacent shuttle moves. (smallturtle test)
+    # This is used when two shuttles abut one another. We need to wake the
+    # shuttle if its adjacent shuttle moves. (smallturtle test)
     # For that we'll use a sort of dummy zone that doesn't contain any regions,
     # but which will be wiped when the dependant shuttle moves.
     #
@@ -1412,17 +1412,17 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
     assert.strictEqual 0, zoneForRegion.size
 
 
-DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
+AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   # This keeps track of shuttles which might move on the next step. This includes
   # any shuttle which just moved, shuttles next to a zone which was
   # just destroyed.
-  dirty = new Set # set of shuttles
+  awake = new Set # set of shuttles
 
   # Ugh, this is way more complicated than it needs to be.
   #
   # If a zone is destroyed, we need a list of all the shuttles which need to be
-  # marked dirty.
-  # If a shuttle gets marked dirty, we need to remove that list.
+  # woken up.
+  # If a shuttle gets woken up, we need to remove that list.
   shuttlesForZone = new Map # Zone -> Set of shuttles
   shuttlesForZone.default = -> new Set
   shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
@@ -1431,40 +1431,40 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   shuttles.deleteWatch.on (s) ->
     log 's deletewatch', s
 
-    # setDirty clears most of the state associated with a shuttle.
-    # No need to repeat work - we'll set it dirty then remove it.
-    setDirty s
-    dirty.delete s
+    # wake clears most of the state associated with a shuttle.
+    # No need to repeat work - we'll wake it then remove it.
+    wake s
+    awake.delete s
 
   zones.watch.on (z) ->
     log 'zw', z._id, z
-    # A zone was deleted. Set any relevant shuttles to dirty.
+    # A zone was deleted. Wake any relevant shuttles.
     if (set = shuttlesForZone.get z)
       log 'zones watch', z._id
-      set.forEach (s) -> setDirty s, 'adjacent zone killed'
+      set.forEach (s) -> wake s, 'adjacent zone killed'
       shuttlesForZone.delete z
 
   stateForce.watch.on (state) ->
     # The force on the shuttle was changed in some way.
-    setDirty state.shuttle, 'force changed'
+    wake state.shuttle, 'force changed'
 
-  # The shuttle moved. Make that sucker dirty for the next step too.
+  # The shuttle moved. Wake that sucker for the next step too.
   currentStates.watch.on (shuttle) ->
-    setDirty shuttle, 'moved this step'
+    wake shuttle, 'moved this step'
 
   shuttleStates.deleteWatch.on (state) ->
     log 'state deletewatch', state
     # We'll delete invalid states when the region is passable once again
-    setDirty state.shuttle, 'state was deleted'
+    wake state.shuttle, 'state was deleted'
 
-  setDirty = (shuttle, reason) ->
-    if dirty.has shuttle
-      log "XXXDirty #{shuttle.id} because #{reason}" if reason
+  wake = (shuttle, reason) ->
+    if awake.has shuttle
+      log "waking #{shuttle.id} because #{reason}" if reason
       return
 
-    log "setDirty #{shuttle.id} because #{reason}" if reason
+    log "wake #{shuttle.id} because #{reason}" if reason
 
-    log '+ dirty shuttle', shuttle.id
+    log '+ awake shuttle', shuttle.id
     if (deps = shuttleZoneDeps.get shuttle)
       # Clear dependancies.
       deps.forEach (z) ->
@@ -1478,35 +1478,37 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # In that case we still want to purge it from tracking sets, but we don't
     # need to dignify the shuttle with dirtiness.
     #if shuttle.used
-    dirty.add shuttle
+    awake.add shuttle
 
-  data: dirty
+  data: awake
 
-  # The shuttle is clean - but it will become dirty if these zones change or
-  # blocking shuttles move.
-  setCleanDeps: (shuttle, deps) ->
-    actuallyClean = true
+  # The shuttle is asleep - but it will wake if these zones change or blocking
+  # shuttles move.
+  setAsleepDeps: (shuttle, deps) ->
+    actuallyAsleep = true
     deps.forEach (z) ->
-      actuallyClean = false if !z.used
+      actuallyAsleep = false if !z.used
 
-    if !actuallyClean
-      log "NOT CLEANING #{shuttle.id} - zones changed"
+    if !actuallyAsleep
+      log "NOT SNOOZING #{shuttle.id} - zones changed"
       return
 
-    # A dirty shuttle didn't move.
-    dirty.delete shuttle
+    # An awake shuttle didn't move. Put it to sleep.
+    awake.delete shuttle
 
     deps.forEach (z) ->
       shuttlesForZone.getDef(z).add shuttle
     shuttleZoneDeps.set shuttle, deps
 
-    log 'setCleanDeps', shuttle.id
+    log 'setAsleepDeps', shuttle.id
 
-  forEach: (fn) -> dirty.forEach fn
+  forEach: (fn) ->
+    shuttles.flush()
+    awake.forEach fn
 
   check: (invasive) ->
-    # Dirty shuttles aren't listed in shuttle zone deps.
-    dirty.forEach (s) ->
+    # Awake shuttles aren't listed in shuttle zone deps.
+    awake.forEach (s) ->
       assert !shuttleZoneDeps.has s
 
     # All zones we're listening on should be used
@@ -1514,7 +1516,7 @@ DirtyShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       assert zone.used
       # And shuttleZoneDeps and shuttlesForZone should be a bijection.
       shuttles.forEach (s) ->
-        assert !dirty.has(s)
+        assert !awake.has(s)
         assert shuttleZoneDeps.get(s).has zone
 
     shuttleZoneDeps.forEach (zones, s) ->
@@ -1551,7 +1553,7 @@ Step = (modules) ->
   {
     zones,
     shuttles,
-    dirtyShuttles,
+    awakeShuttles,
     shuttleStates,
     stateForce,
     currentStates,
@@ -1582,7 +1584,7 @@ Step = (modules) ->
 
   # Alright, the rules are something like this:
   #
-  # For each dirty shuttle:
+  # For each awake shuttle:
   #
   # 0. If the shuttle has already moved in an orthogonal direction, discard impulse.
   # 1. If the space a shuttle is moving into is empty, move the shuttle
@@ -1598,27 +1600,25 @@ Step = (modules) ->
   #
   # Whenever a shuttle moves:
   # - Mark its shadow as being impassable from orthogonal directions
-  # - Make it dirty
+  # - Wake it
   # - Move it
   # - Consume impulse in the direction of travel, if there is any (even if pushed)
   #
-  # Anything that runs down a shuttle's impulse is a dirty dependancy.
+  # Anything that runs down a shuttle's impulse should wake it up when its pressure changes.
 
 
 
-  # Dirty shuttles which have left-right impulse or up-down impulse
+  # Awake shuttles which have left-right impulse or up-down impulse
   shuttlesX = []
   shuttlesY = []
 
 
   calcPressure = ->
     log 'step 1) calculating pressure'
-    shuttles.flush()
-    # shuttlesToMove.length = dependancies.length = impulse.length = 0
 
     # Part 1: Calculate the impulse on all shuttles.
-    shuttles.forEach (shuttle) ->
-    #dirtyShuttles.forEach (shuttle) ->
+    #shuttles.forEach (shuttle) ->
+    awakeShuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle.id
       Jit.stats.checks++
       return if shuttle.held # Manually set from the UI.
@@ -1828,7 +1828,7 @@ Step = (modules) ->
 
     # The shuttle didn't move.
     #log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
-    #dirtyShuttles.setCleanDeps shuttle, deps
+    #awakeShuttles.setAsleepDeps shuttle, deps
     #log 'deps', deps
 
   return -> # returns true if something moves.
@@ -1862,11 +1862,11 @@ module.exports = Jit = (rawGrid) ->
   zones = Zones shuttles, fillKeys, regions, currentStates
 
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
-  dirtyShuttles = DirtyShuttles shuttles, shuttleStates, stateForce, currentStates, zones
+  awakeShuttles = AwakeShuttles shuttles, shuttleStates, stateForce, currentStates, zones
 
   modules = {baseGrid, engineBuffer, engines, engineGrid, shuttleBuffer,
     shuttles, shuttleStates, shuttleGrid, fillKeys, groups, stateForce,
-    groupConnections, regions, currentStates, zones, dirtyShuttles,
+    groupConnections, regions, currentStates, zones, awakeShuttles,
     shuttleOverlap}
 
   step = Step modules
@@ -2009,9 +2009,9 @@ parseFile = exports.parseFile = (filename, opts) ->
       console.log '-> World stable.'
       break
 
-    console.log 'dirty shuttles:', jit.modules.dirtyShuttles.data.size
+    console.log '# Awake shuttles:', jit.modules.awakeShuttles.data.size
     #jit.modules.shuttles.forEach (s) =>
-    #  if !jit.modules.dirtyShuttles.data.has s
+    #  if !jit.modules.awakeShuttles.data.has s
     #    console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
 
   log '-----'
