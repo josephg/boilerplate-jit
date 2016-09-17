@@ -1,7 +1,5 @@
 mersenne = require 'mersenne'
 assert = require 'assert'
-Simulator = require 'boilerplate-sim'
-{parseXY} = Simulator
 Jit = require './jit'
 log = require './log'
 util = require './util'
@@ -29,14 +27,15 @@ randomBase = randomValueFrom [
     'bridge', 5
   ]
 
-randomShuttle = do ->
-  rs = randomValueFrom [null, 5,
-    'shuttle', 1
-    'thinshuttle', 1
-  ]
+randomShuttleCell = ->
+  val = (if mersenne.rand() % 2 then 0x40 else 0x80)
+  # 3/4 chance to try and connect.
+  for i in [0...4]
+    val |= (1<<i) if mersenne.rand() % 4 > 0
+  return val
 
-  (bv) ->
-    if bv in ['nothing', 'bridge', 'ribbon', 'ribbonbridge'] then rs() else null
+randomShuttle = (bv) ->
+  if bv in ['nothing', 'bridge', 'ribbon', 'ribbonbridge'] then randomShuttleCell() else null
 
 grid = {}
 #grid[[x,y]] = 'nothing' for x in [1..2] for y in [1..1]
@@ -44,7 +43,6 @@ grid = {}
 
 #grid = require './test.json'
 
-sim = new Simulator grid
 jit = new Jit grid
 
 SIZE = 4
@@ -80,63 +78,38 @@ fuzz = ->
       sv = randomShuttle bv
       #console.log 'set', x, y, bv, sv #if iter >= 950
 
-      #sim.set x, y, v
       jit.set x, y, bv, sv
 
     debugPrint() unless log.quiet
 
     try
-      ###
-      simPressure = sim.getPressure()
-
-      jitPressure = {}
-      jit.groups.forEach (group) ->
-        zone = jit.zones.getZoneForGroup group
-        return unless zone
-        #log 'zone', zone.pressure #, zone, group
-        if zone.pressure
-          #log 'zone with pressure:', zone.pressure, zone
-          group.points.forEach (x, y) ->
-            #log 'p', x, y, zone.pressure
-            jitPressure[[x,y]] = zone.pressure
-
-      for k, v of simPressure
-        delete simPressure[k] if v is 0
-        if sim.grid[k] in ['positive', 'negative']
-          delete simPressure[k]
-          delete jitPressure[k]
-      assert.deepEqual jitPressure, simPressure
-      ###
-
-      #copy = new Jit jit.toJSON()
+      snapshot = jit.toJSON()
 
 
       jit.check()
       moved = jit.step()
       jit.check()
 
+      # Check that if step() returns false nothing changed
       if !moved
-        json = jit.toJSON()
-        j2 = new Jit json
+        snapshot2 = jit.toJSON()
+        assert.deepEqual snapshot, snapshot2
+
+        j2 = new Jit snapshot
         assert !j2.step(), 'World erroneously stable'
 
-      # The copy and the original should now match
-      #if !justCollidedStates
-        #copy.step()
-        #assert.deepEqual jit.toJSON(), copy.toJSON()
+      # Check that calling step on a copy does exactly the same thing (the sim should be stable)
+      copy = new Jit snapshot
+      copy.step()
+      assert.deepEqual jit.toJSON(), copy.toJSON()
 
     catch e
       log.quiet = no
       log "****** CRASH ON ITERATION #{iter} ******"
 
       ###
-      log 'jitPressure', jitPressure
-      log 'simPressure', simPressure
-
       log '---- JIT ----'
       printPressure jitPressure
-      log '---- SIM ----'
-      printPressure simPressure
       log '-------------'
       ###
       debugPrint()
@@ -152,11 +125,9 @@ fuzz = ->
 
   for x in [0...SIZE]
     for y in [0...SIZE]
-      #sim.set x, y, null
       jit.set x, y, null, null
 
   jit.baseGrid.forEach (x, y) ->
-    #sim.set x, y, null
     jit.set x, y, null, null
 
   jit.checkEmpty()
