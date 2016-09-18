@@ -97,6 +97,7 @@ fuzz = ->
 
         j2 = new Jit snapshot
         assert !j2.step(), 'World erroneously stable'
+        # TODO: and check that all the shuttles are asleep.
 
       # Check that calling step on a copy does exactly the same thing (the sim should be stable)
       copy = new Jit snapshot

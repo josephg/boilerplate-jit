@@ -238,12 +238,15 @@ BlobFiller = (type, buffer) ->
       @blockedX = @blockedY = null
 
       # This stuff could be held in a weakmap by Step, but its hot data
-      # and I _think_ it'll be faster to embed it directly in the shuttle.
+      # and I _think_ it'll be faster to embed it directly in the shuttle than
+      # look it up all the time during step(). Its kinda gross that this is
+      # here though.
       #@stepTag = 0
       @impulseX = @impulseY = 0 # used to sort
       @imXRem = @imYRem = 0 # actually consumed when the shuttle moves
       # Set of zones which, when deleted, will wake the shuttle
       @zoneDeps = new Set
+      @immState = null
       
 
     @anchor = {x, y} # leftmost cell in the top row
@@ -1189,13 +1192,13 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
   #
   # TODO: Is this still needed?
   buffering = no
-  #patch = new Map
+  patch = new Map
 
   watch = new Watcher
 
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
-    s.currentState = state
+    s.immState = s.currentState = state
     currentStates.set s, state
     watch.signal s, null, state
 
@@ -1223,17 +1226,19 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
   map: currentStates
   watch: watch
 
-  ###
   beginTxn: ->
     buffering = yes
 
   endTxn: ->
-    patch.forEach (state, shuttle) -> _move shuttle, state
+    patch.forEach (state, shuttle) ->
+      assert.strictEqual shuttle.immState, state
+      _move shuttle, state
     patch.clear()
     buffering = no
-  ###
 
   set: (shuttle, state) ->
+    shuttle.immState = state
+    assert.strictEqual state.shuttle, shuttle
     if buffering
       patch.set shuttle, state
     else
@@ -1284,7 +1289,7 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
       if (shuttle = shuttleGrid.getShuttle x+dx, y+dy)
         shuttles.delete shuttle, shuttle.currentState
 
-Zones = (shuttles, fillKeys, regions, currentStates) ->
+Zones = (shuttles, regions, currentStates) ->
   # A zone is a set of regions which are connected because of the current
   # shuttle states.  These are constantly destroyed & regenerated as shuttles
   # move around.
@@ -1392,37 +1397,38 @@ Zones = (shuttles, fillKeys, regions, currentStates) ->
 
   getZoneForGroup: (group) ->
     r = regions.get group, currentStates.map
-    return @getZoneForRegion r if r != null
-
-    # The region is filled. Figure out which shuttle did it. (We could probably
-    # pass this back from regions.get to avoid this calculation, but its
-    # probably not a big deal.)
-    filledStates = fillKeys.getFilledStates group.fillKey
-
-    blockingShuttle = null
-    group.shuttles.forEach (s) ->
-      state = currentStates.map.get s
-      if filledStates.has state
-        assert.equal blockingShuttle, null # ... right?
-        blockingShuttle = s
-    assert blockingShuttle
-    return @makeZoneUnderShuttle blockingShuttle
+    # We'll return null if there's no zone here, because the group is filled by
+    # a shuttle.
+    return if r then @getZoneForRegion r else null
 
   checkEmpty: ->
     assert.strictEqual 0, zoneForRegion.size
 
 
 AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
-  # This keeps track of shuttles which might move on the next step. This includes
-  # any shuttle which just moved, shuttles next to a zone which was
-  # just destroyed.
+  # This keeps track of shuttles which might move on the next step. Shuttles
+  # sleep when they've been stationary for 1 step, and its impossible for them
+  # to move on the next step too.
+  #
+  # We figure out what would wake a shuttle up during step() based on *why* the
+  # shuttle didn't move. The contributors are:
+  # - Zones next to a shuttle. Zones being deleted always wake their adjacent
+  # shuttles.
+  # - A blocking shuttle. If a shuttle blocks another shuttle from moving (or
+  # decreases its imulse at all) then the blocked shuttle will be woken up when
+  # the blocking shuttle wakes up. (The blocking shuttle might move this step,
+  # or have a different impulse, or be movable. So we have to check its
+  # blockers).
+
+  # Shuttles are either asleep or awake. Awake shuttles don't need any extra
+  # metadata - they're just marked in the awake list and iterated during
+  # step().
   awake = new Set # set of shuttles
 
   # Ugh, this is way more complicated than it needs to be.
   #
   # If a zone is destroyed, we need a list of all the shuttles which need to be
-  # woken up.
-  # If a shuttle gets woken up, we need to remove that list.
+  # woken up. If a shuttle gets woken up, we need to remove that list.
   shuttlesForZone = new Map # Zone -> Set of shuttles
   shuttlesForZone.default = -> new Set
   shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
@@ -1546,7 +1552,7 @@ ShuttleOverlap = (shuttleStates, shuttleGrid) ->
 
   forEach: (state1, fn) ->
     overlappingStates.getAll(state1)?.forEach (state2) ->
-      fn state2.shuttle, state2 if state2.shuttle.currentState is state2
+      fn state2.shuttle, state2 if state2.shuttle.immState is state2
 
 
 Step = (modules) ->
@@ -1557,7 +1563,8 @@ Step = (modules) ->
     shuttleStates,
     stateForce,
     currentStates,
-    shuttleOverlap
+    shuttleOverlap,
+    fillKeys,
   } = modules
 
   tag = 0 # Incremented at the start of each step.
@@ -1572,13 +1579,37 @@ Step = (modules) ->
       #log 'calculating pressure in group', group
       assert group.used
       zone = zones.getZoneForGroup group
-      assert zone and zone.used
+      if zone
+        assert zone.used
+        log 'pressure', zone.pressure if zone.pressure
 
-      log 'pressure', zone.pressure if zone.pressure
+        # note `-` because we're calculating it from the POV of the zone.
+        impulse -= mult * zone.pressure
+      else
+        # The zone is filled by a shuttle. It won't contribute any pressure,
+        # but we need to figure out which shuttle is blocking us so when that
+        # shuttle moves we get woken up.
+
+        # (We could probably pass this back from regions.get to avoid this
+        # calculation, but its probably not a big deal.)
+        filledStates = fillKeys.getFilledStates group.fillKey
+
+        blockingShuttle = null
+        group.shuttles.forEach (s) ->
+          if filledStates.has s.currentState
+            assert.equal blockingShuttle, null # Exactly 1 shuttle here.
+            blockingShuttle = s
+        assert blockingShuttle
+
+        # So, this is a total hack. We need to wake this shuttle up the step
+        # after the adjacent shuttle *moves*. I could reuse the codepath for
+        # waking a shuttle when a pushing shuttle has its pressure changed, but
+        # thats a bit over-eager. Mind you, those events will often happen
+        # together anyway so it might not be a big deal.
+        zone = zones.makeZoneUnderShuttle blockingShuttle
 
       #shuttle.zoneDeps.add zone
-      # note `-` because we're calculating it from the POV of the zone.
-      impulse -= mult * zone.pressure
+
 
     return impulse
 
@@ -1659,7 +1690,7 @@ Step = (modules) ->
   tryMove = (shuttle, isTop) ->
     newTag = if isTop then tag else -tag
     # The shuttle has moved in the orthogonal direction. Discard.
-    return false if shuttle.currentState.stepTag is -newTag
+    return false if shuttle.immState.stepTag is -newTag
 
     moved = no
     im = if isTop then shuttle.imYRem else shuttle.imXRem
@@ -1707,16 +1738,16 @@ Step = (modules) ->
         s = shuttleList[i]
 
         # The next state the shuttle will be in if it moves
-        nextState = shuttleStates.getStateNear s.currentState, dir
+        nextState = shuttleStates.getStateNear s.immState, dir
 
         # 1. If a shuttle has hit a wall, stop.
         if !nextState || nextState.stepTag == -newTag
-          log 'no state avaliable in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
+          log 'no state avaliable in dir', util.DN[dir], 'from state', s.immState.dx, s.immState.dy
           blocked = true
           break # damn I want a multilevel break here.
 
         shuttleOverlap.forEach nextState, (s2) ->
-          return blocked = true if s2.currentState.stepTag == -newTag
+          return blocked = true if s2.immState.stepTag == -newTag
 
           # We've hit another shuttle.
           if !shuttleGlob.has s2
@@ -1763,11 +1794,11 @@ Step = (modules) ->
       # 3. Push them all!
       im--
       for s2 in shuttleList
-        nextState = shuttleStates.getStateNear s2.currentState, dir
+        nextState = shuttleStates.getStateNear s2.immState, dir
         assert nextState
 
         # We have to tag both places so we both leave a shadow and can't be moved ourselves now.
-        s2.currentState.stepTag = newTag
+        s2.immState.stepTag = newTag
         nextState.stepTag = newTag
 
         log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
@@ -1794,7 +1825,7 @@ Step = (modules) ->
     log 'step 2) update - moving shuttles', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
 
     numMoved = 0
-    #currentStates.beginTxn()
+    currentStates.beginTxn()
 
     # Walk along shuttlesX and shuttlesY together, taking whichever has more
     # impulse.
@@ -1804,7 +1835,6 @@ Step = (modules) ->
         numMoved += tryMove s, true for s in shuttlesY[iy...]
         break
       if iy == shuttlesY.length
-        log 'A'
         numMoved += tryMove s, false for s in shuttlesX[ix...]
         break
 
@@ -1816,7 +1846,7 @@ Step = (modules) ->
 
         #Jit.stats.moves++
 
-    #currentStates.endTxn()
+    currentStates.endTxn()
 
     # TODO: Deps. Here?
 
@@ -1859,7 +1889,7 @@ module.exports = Jit = (rawGrid) ->
   currentStates = CurrentStates shuttles, stateForce, shuttleStates
   groupConnections = GroupConnections groups
   regions = Regions fillKeys, groups, groupConnections
-  zones = Zones shuttles, fillKeys, regions, currentStates
+  zones = Zones shuttles, regions, currentStates
 
   shuttleOverlap = ShuttleOverlap shuttleStates, shuttleGrid, currentStates
   awakeShuttles = AwakeShuttles shuttles, shuttleStates, stateForce, currentStates, zones
