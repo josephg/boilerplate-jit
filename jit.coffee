@@ -1552,7 +1552,7 @@ ShuttleOverlap = (shuttleStates, shuttleGrid) ->
 
   forEach: (state1, fn) ->
     overlappingStates.getAll(state1)?.forEach (state2) ->
-      fn state2.shuttle, state2 if state2.shuttle.immState is state2
+      fn state2, state2.shuttle # if state2.shuttle.immState is state2
 
 
 Step = (modules) ->
@@ -1704,7 +1704,7 @@ Step = (modules) ->
     else
       if isTop then DOWN else RIGHT
 
-    log 'tryMove shuttle', shuttle.id, 'im', im, util.DN[dir]
+    log 'tryMove shuttle', shuttle.id, util.DN[dir], im
 
     shuttleList = [shuttle] # Kept sorted because iteration order is important.
     needSort = false
@@ -1720,15 +1720,18 @@ Step = (modules) ->
 
       # Usually there's nothing in the way, and the shuttle just gets moved.
       #
-      # But most of this code exists in case there are *shuttles* in the way! Uh oh!
+      # But most of this code exists in case there are *shuttles* in the way!
+      # Uh oh!
       #
-      # We're going to glob up the whole bunch of movable shuttles and bring them for the ride.
+      # We're going to glob up the whole bunch of movable shuttles and bring
+      # them for the ride.
       #
       # There's 3 parts to that:
       # 1. Get all the shuttles to push. As we go we check that they can move
       #    (the next state is valid).
       # 2. Calculate pressure (so, if they have impulse resisting, decrease.)
-      # 3. If we still have impulse left over, push them all. Consume contributing forces.
+      # 3. If we still have impulse left over, push them all. Consume
+      #    contributing forces.
 
 
       # 1. Gather all the shuttles that are about to be pushed.
@@ -1746,11 +1749,14 @@ Step = (modules) ->
           blocked = true
           break # damn I want a multilevel break here.
 
-        shuttleOverlap.forEach nextState, (s2) ->
-          return blocked = true if s2.immState.stepTag == -newTag
+        shuttleOverlap.forEach nextState, (state2, s2) ->
+          if state2.stepTag == -newTag
+            log 'Blocked by shuttle'
+            blocked = true
+            return
 
           # We've hit another shuttle.
-          if !shuttleGlob.has s2
+          if s2.immState is state2 and !shuttleGlob.has s2
             shuttleGlob.add s2
             shuttleList.push s2
             needSort = true
@@ -1765,8 +1771,8 @@ Step = (modules) ->
       # 2. Calculate pressure, consuming opposing pressure as we go.
       if oppositingForce > im
         log 'Opposing force too great', oppositingForce, im
-        # Ok, the shuttles are pushing back so hard we can't move. Consume impulse from them
-        # in their magic order.
+        # Ok, the shuttles are pushing back so hard we can't move. Consume
+        # impulse from them in their magic order.
         shuttleList.sort compareByPosition if needSort
         needSort = false
 
@@ -1839,7 +1845,7 @@ Step = (modules) ->
         break
 
       # Note > not >=.
-      if (sx = shuttlesX[ix]).impulseX > (sy = shuttlesY[iy]).impulseY
+      if abs((sx = shuttlesX[ix]).impulseX) > abs((sy = shuttlesY[iy]).impulseY)
         ix++; numMoved += tryMove sx, false
       else
         iy++; numMoved += tryMove sy, true
@@ -1941,7 +1947,8 @@ module.exports = Jit = (rawGrid) ->
   # Be careful calling this while we're in step().
   moveShuttle: (shuttle, state) ->
     overlap = false
-    shuttleOverlap.forEach state, -> overlap = true
+    shuttleOverlap.forEach state, (state2, shuttle2) ->
+      overlap = true if shuttle2.immState is state2
     # TODO: push the pesky shuttles out of the way using the monster code in step.
     if !overlap
       currentStates.set shuttle, state
@@ -1960,7 +1967,7 @@ module.exports = Jit = (rawGrid) ->
   checkEmpty: ->
     m.checkEmpty?() for k, m of modules
 
-  printGrid: ->
+  printGrid: (stream = process.stdout) ->
     overlay = new Map2
     ids = new Map2
     shuttles.forEach (s) ->
@@ -1974,7 +1981,7 @@ module.exports = Jit = (rawGrid) ->
 
     util.printCustomGrid util.gridExtents(baseGrid), (x, y) ->
       overlay.get(x, y) or baseGrid.get x, y
-    , (x, y) -> ids.get(x, y)
+    , ids.get.bind(ids), stream
 
 
   toJSON: ->
