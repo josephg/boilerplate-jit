@@ -46,12 +46,12 @@ shuttleConnects = (sv, dir) -> !!(sv & (1<<dir))
 compareByPosition = (a, b) ->
   # Could cache the anchor for each shuttle state, but I don't think it
   # would buy us anything.
-  ay = a.anchor.y + a.currentState.dy
-  _by = b.anchor.y + b.currentState.dy # 'by' is a coffeescript keyword
+  ay = a.anchor.y + a.prevState.dy
+  _by = b.anchor.y + b.prevState.dy # 'by' is a coffeescript keyword
   return ay - _by if ay != _by
 
-  ax = a.anchor.x + a.currentState.dx
-  bx = b.anchor.x + b.currentState.dx
+  ax = a.anchor.x + a.prevState.dx
+  bx = b.anchor.x + b.prevState.dx
   return ax - bx
 
 
@@ -241,12 +241,12 @@ BlobFiller = (type, buffer) ->
       # and I _think_ it'll be faster to embed it directly in the shuttle than
       # look it up all the time during step(). Its kinda gross that this is
       # here though.
-      #@stepTag = 0
-      @impulseX = @impulseY = 0 # used to sort
-      @imXRem = @imYRem = 0 # actually consumed when the shuttle moves
+      #@stepTag = 0 now state.stepTag
+      @prevState = null # Used by currentStates.flush to send the old state when it signals.
+      @impulseX = @impulseY = 0 # Used to sort
+      @imXRem = @imYRem = 0 # What gets actually consumed when the shuttle moves
       # Set of zones which, when deleted, will wake the shuttle
       @zoneDeps = new Set
-      @immState = null
       
 
     @anchor = {x, y} # leftmost cell in the top row
@@ -456,6 +456,8 @@ ShuttleStates = (baseGrid, shuttles) ->
 
   collapse: (shuttle) ->
     log 'collapsing', shuttle
+    assert.equal shuttle.currentState, shuttle.prevState # Make sure the shuttle isn't in motion
+
     saved = shuttle.currentState
     # Delete all states except for the current state
     return unless (states = shuttleStates.get shuttle)
@@ -543,7 +545,7 @@ ShuttleGrid = (shuttleStates) ->
     # Get the shuttle currently at (x, y), or null.
     shuttle = null
     stateGrid.get(x, y)?.forEach (state) ->
-      if state.shuttle.currentState is state
+      if state.shuttle.prevState is state
         shuttle = state.shuttle
     return shuttle
 
@@ -551,7 +553,7 @@ ShuttleGrid = (shuttleStates) ->
     # Get the grid cell value at x, y. This is a lot of work - if you want to
     # draw a lot of shuttles or something, don't use this.
     return unless (shuttle = @getShuttle x, y)
-    {dx, dy} = shuttle.currentState
+    {dx, dy} = shuttle.prevState
     return shuttle.points.get x-dx, y-dy
 
   check: ->
@@ -1189,18 +1191,16 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
   # soon as we move them - other shuttles might depend on the zones where they
   # are. We'll hold any changes to the state map until step() is done then send
   # them all.
-  #
-  # TODO: Is this still needed?
-  buffering = no
-  patch = new Map
 
   watch = new Watcher
 
+  moved = []
+
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
-    s.immState = s.currentState = state
+    s.prevState = s.currentState = state
     currentStates.set s, state
-    watch.signal s, null, state
+    watch.signal s, null, state # prevState null in the signal.
 
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
@@ -1212,37 +1212,33 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     s.currentState = null
     # If you care about the current state going away, watch shuttles.deleteWatch.
 
-  _move = (shuttle, state) ->
-    assert state
-    assert.strictEqual state.shuttle, shuttle
+  _flush = (shuttle) ->
+    return if shuttle.currentState == shuttle.prevState
+    state = shuttle.currentState
 
-    log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
-    prev = shuttle.currentState
-
-    shuttle.currentState = state
     currentStates.set shuttle, state
-    watch.signal shuttle, prev, state
+    watch.signal shuttle, shuttle.prevState, state
+    shuttle.prevState = state
 
   map: currentStates
   watch: watch
 
-  beginTxn: ->
-    buffering = yes
+  flushAll: ->
+    _flush s for s in moved
+    moved.length = 0
 
-  endTxn: ->
-    patch.forEach (state, shuttle) ->
-      assert.strictEqual shuttle.immState, state
-      _move shuttle, state
-    patch.clear()
-    buffering = no
-
-  set: (shuttle, state) ->
-    shuttle.immState = state
+  setBuffered: (shuttle, state) ->
+    log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
     assert.strictEqual state.shuttle, shuttle
-    if buffering
-      patch.set shuttle, state
-    else
-      _move shuttle, state
+    shuttle.currentState = state
+    moved.push shuttle
+
+  setImmediate: (shuttle, state) ->
+    # This is a bit roundabout, but it doesn't matter at the moment - this
+    # isn't a hot path.
+    @setBuffered shuttle, state
+    @flushAll()
+
 
 CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) ->
   # This is a simple stateless module which deletes shuttles when dangerous stuff happens.
@@ -1264,6 +1260,8 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
     else if oldPassable and !newPassable
       shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
         shuttle = state.shuttle
+
+        assert.strictEqual shuttle.currentState, shuttle.prevState # Can't be in motion.
 
         # So, two strategies for dealing with this.
         if shuttle.currentState is state
@@ -1567,7 +1565,37 @@ Step = (modules) ->
     fillKeys,
   } = modules
 
+  # Alright, the rules are something like this:
+  #
+  # For each awake shuttle:
+  #
+  # 0. If the shuttle has already moved in an orthogonal direction, discard impulse.
+  # 1. If the space a shuttle is moving into is empty, move the shuttle
+  # 2. If there is a wall in front of the shuttle, keep impulse but continue.
+  # 3. If there is 1 or more shuttles in front of the shuttle, calculate the transitive
+  #   blockers for moving in the chosen direction. Sort.
+  #   - For each point of pressure opposing the shuttle, cancel out the shuttle's impulse
+  #   - (impulse -> 0, stop)
+  #   - If the transitive shuttles can be pushed, push them.
+  #   - For each unit moved, for each point of impulse in the *same* direction, cancel 1 when
+  #     the shuttle moves.
+  #
+  #
+  # Whenever a shuttle moves:
+  # - Mark its shadow as being impassable from orthogonal directions
+  # - Wake it
+  # - Move it
+  # - Consume impulse in the direction of travel, if there is any (even if pushed)
+  #
+  # Anything that runs down a shuttle's impulse should wake it up when its pressure changes.
+
+
   tag = 0 # Incremented at the start of each step.
+
+  # Awake shuttles which have left-right impulse or up-down impulse. Cleared at
+  # the end of step().
+  shuttlesX = []
+  shuttlesY = []
 
   # Given a force, calculate the resultant impulse (pressure) on the shuttle.
   calcImpulse = (shuttle, f) ->
@@ -1610,38 +1638,7 @@ Step = (modules) ->
 
       #shuttle.zoneDeps.add zone
 
-
     return impulse
-
-  # Alright, the rules are something like this:
-  #
-  # For each awake shuttle:
-  #
-  # 0. If the shuttle has already moved in an orthogonal direction, discard impulse.
-  # 1. If the space a shuttle is moving into is empty, move the shuttle
-  # 2. If there is a wall in front of the shuttle, keep impulse but continue.
-  # 3. If there is 1 or more shuttles in front of the shuttle, calculate the transitive
-  #   blockers for moving in the chosen direction. Sort.
-  #   - For each point of pressure opposing the shuttle, cancel out the shuttle's impulse
-  #   - (impulse -> 0, stop)
-  #   - If the transitive shuttles can be pushed, push them.
-  #   - For each unit moved, for each point of impulse in the *same* direction, cancel 1 when
-  #     the shuttle moves.
-  #
-  #
-  # Whenever a shuttle moves:
-  # - Mark its shadow as being impassable from orthogonal directions
-  # - Wake it
-  # - Move it
-  # - Consume impulse in the direction of travel, if there is any (even if pushed)
-  #
-  # Anything that runs down a shuttle's impulse should wake it up when its pressure changes.
-
-
-
-  # Awake shuttles which have left-right impulse or up-down impulse
-  shuttlesX = []
-  shuttlesY = []
 
 
   calcPressure = ->
@@ -1652,6 +1649,7 @@ Step = (modules) ->
     awakeShuttles.forEach (shuttle) ->
       log 'step() looking at shuttle', shuttle.id
       Jit.stats.checks++
+
       return if shuttle.held # Manually set from the UI.
 
       # Consider moving the shuttle.
@@ -1690,7 +1688,7 @@ Step = (modules) ->
   tryMove = (shuttle, isTop) ->
     newTag = if isTop then tag else -tag
     # The shuttle has moved in the orthogonal direction. Discard.
-    return false if shuttle.immState.stepTag is -newTag
+    return false if shuttle.currentState.stepTag is -newTag
 
     moved = no
     im = if isTop then shuttle.imYRem else shuttle.imXRem
@@ -1741,11 +1739,11 @@ Step = (modules) ->
         s = shuttleList[i]
 
         # The next state the shuttle will be in if it moves
-        nextState = shuttleStates.getStateNear s.immState, dir
+        nextState = shuttleStates.getStateNear s.currentState, dir
 
         # 1. If a shuttle has hit a wall, stop.
         if !nextState || nextState.stepTag == -newTag
-          log 'no state avaliable in dir', util.DN[dir], 'from state', s.immState.dx, s.immState.dy
+          log 'no state avaliable in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
           blocked = true
           break # damn I want a multilevel break here.
 
@@ -1756,7 +1754,7 @@ Step = (modules) ->
             return
 
           # We've hit another shuttle.
-          if s2.immState is state2 and !shuttleGlob.has s2
+          if s2.currentState is state2 and !shuttleGlob.has s2
             shuttleGlob.add s2
             shuttleList.push s2
             needSort = true
@@ -1800,16 +1798,16 @@ Step = (modules) ->
       # 3. Push them all!
       im--
       for s2 in shuttleList
-        nextState = shuttleStates.getStateNear s2.immState, dir
+        nextState = shuttleStates.getStateNear s2.currentState, dir
         assert nextState
 
         # We have to tag both places so we both leave a shadow and can't be moved ourselves now.
-        s2.immState.stepTag = newTag
+        s2.currentState.stepTag = newTag
         nextState.stepTag = newTag
 
         log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
         
-        currentStates.set s2, nextState
+        currentStates.setBuffered s2, nextState
         moved = yes
         if isTop then s2.imXRem = 0 else s2.imYRem = 0
 
@@ -1831,7 +1829,6 @@ Step = (modules) ->
     log 'step 2) update - moving shuttles', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
 
     numMoved = 0
-    currentStates.beginTxn()
 
     # Walk along shuttlesX and shuttlesY together, taking whichever has more
     # impulse.
@@ -1851,8 +1848,10 @@ Step = (modules) ->
         iy++; numMoved += tryMove sy, true
 
         #Jit.stats.moves++
-
-    currentStates.endTxn()
+    
+    # Actually forward signals based on shuttles that moved, to kill zones and
+    # figure out the new set of dirty states for the next step.
+    currentStates.flushAll()
 
     # TODO: Deps. Here?
 
@@ -1948,10 +1947,10 @@ module.exports = Jit = (rawGrid) ->
   moveShuttle: (shuttle, state) ->
     overlap = false
     shuttleOverlap.forEach state, (state2, shuttle2) ->
-      overlap = true if shuttle2.immState is state2
+      overlap = true if shuttle2.currentState is state2
     # TODO: push the pesky shuttles out of the way using the monster code in step.
     if !overlap
-      currentStates.set shuttle, state
+      currentStates.setImmediate shuttle, state
 
   step: step
 
