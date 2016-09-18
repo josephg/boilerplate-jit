@@ -1,23 +1,6 @@
 {Map2, Set2, Map3, Set3} = require './collections2'
 log = require './log'
 assert = require 'assert'
-chalk = require 'chalk'
-do -> # It might not actually be worth doing this. Turns out chalk is really small!
-  if !chalk.bgGreen
-    chalk = (x) -> x
-    for fn in ['bgGreen','bgRed','bgWhite','bgBlue','blue','yellow','grey','magenta']
-      chalk[fn] = chalk
-chars =
-  positive: chalk.bgGreen '+'
-  negative: chalk.bgRed '-'
-  nothing: chalk.bgWhite ' '
-  thinsolid: chalk.bgWhite.grey 'x'
-  shuttle: chalk.magenta 'S'
-  thinshuttle: chalk.magenta.bgWhite 's'
-  bridge: chalk.bgBlue 'B'
-  thinbridge: chalk.blue 'b'
-  ribbon: chalk.yellow 'r'
-  ribbonbridge: chalk.yellow.bgBlue 'r'
 
 # CSS order.
 UP=0; RIGHT=1; DOWN=2; LEFT=3
@@ -293,7 +276,30 @@ exports.fillGraph = (initialNode, f) ->
 
   return
 
-exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, stream = process.stdout) ->
+
+# ------- Printing grids
+chalk = require 'chalk'
+do ->
+  # For the browser we'll discard chalk.
+  # It might not actually be worth doing this. Turns out chalk is really small!
+  if !chalk.bgGreen
+    chalk = (x) -> x
+    for fn in ['bgGreen','bgRed','bgWhite','bgBlue','blue','yellow','grey','magenta']
+      chalk[fn] = chalk
+chars =
+  positive: (id) -> chalk.bgGreen id || '+'
+  negative: (id) -> chalk.bgRed id || '-'
+  nothing: -> chalk.bgWhite ' '
+  thinsolid: -> chalk.bgWhite.grey 'x'
+  shuttle: (id) -> chalk.magenta id || 'S'
+  thinshuttle: (id) -> chalk.magenta.bgWhite id || 's'
+  bridge: -> chalk.bgBlue 'B'
+  thinbridge: -> chalk.blue 'b'
+  ribbon: -> chalk.yellow 'r'
+  ribbonbridge: -> chalk.yellow.bgBlue 'r'
+
+
+exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, getIdFn = (->), stream = process.stdout) ->
   top ||= 0; left ||= 0
 
   header = chalk.bold
@@ -307,9 +313,11 @@ exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, 
   for y in [top..bottom]
     stream.write header "#{y%10} "
     for x in [left..right]
-      v = getFn(x, y)
+      v = getFn x, y
       v = shuttleStr v if typeof v is 'number'
-      stream.write chars[v] || (if v? then ("#{v}")[0] else ';')
+      id = getIdFn x, y
+      id = id%10 if typeof id is 'number'
+      stream.write chars[v]?(id) || (if v? then ("#{v}")[0] else ';')
     stream.write '\n'
 
   stream.write header '+ '
@@ -354,10 +362,11 @@ exports.printJSONGrid = (grid, stream = process.stdout) ->
     (x, y) -> grid.shuttles[[x,y]] || grid.base[[x,y]]
   else
     (x, y) -> grid[[x,y]]
-  printCustomGrid extents, fn, stream
+  printCustomGrid extents, fn, (->), stream
 
 exports.printGrid = (extents, grid, stream = process.stdout) ->
-  printCustomGrid extents, ((x, y) -> grid.get x, y), stream
+  # Who uses this??
+  printCustomGrid extents, ((x, y) -> grid.get x, y), (->), stream
 
 
 # Convert a string back to a bp fragment or grid.

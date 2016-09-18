@@ -1932,6 +1932,7 @@ module.exports = Jit = (rawGrid) ->
 
   printGrid: ->
     overlay = new Map2
+    ids = new Map2
     shuttles.forEach (s) ->
       state = s.currentState
       if !state
@@ -1939,9 +1940,12 @@ module.exports = Jit = (rawGrid) ->
       {dx, dy} = state
       s.points.forEach (x, y, v) ->
         overlay.set x+dx, y+dy, if (v & SHUTTLE) then 'shuttle' else 'thinshuttle'
+        ids.set x+dx, y+dy, s.id
 
     util.printCustomGrid util.gridExtents(baseGrid), (x, y) ->
       overlay.get(x, y) or baseGrid.get x, y
+    , (x, y) -> ids.get(x, y)
+
 
   toJSON: ->
     json =
