@@ -2061,6 +2061,6 @@ parseFile = exports.parseFile = (filename, opts) ->
 if require.main == module
   filename = process.argv[2]
   throw Error 'Missing file argument' unless filename
-  log.quiet = process.argv[3] == '-q'
+  log.quiet = process.argv[3] != '-v'
   parseFile filename
   console.log Jit.stats
