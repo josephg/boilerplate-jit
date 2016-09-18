@@ -243,7 +243,7 @@ BlobFiller = (type, buffer) ->
       # here though.
       #@stepTag = 0 now state.stepTag
       @prevState = null # Used by currentStates.flush to send the old state when it signals.
-      @impulseX = @impulseY = 0 # Used to sort
+      @imX = @imY = 0 # Used to sort
       @imXRem = @imYRem = 0 # What gets actually consumed when the shuttle moves
       # Set of zones which, when deleted, will wake the shuttle
       @zoneDeps = new Set
@@ -1194,6 +1194,9 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
 
   watch = new Watcher
 
+  # Its possible this will have duplicates if a shuttle moves one way, then is
+  # pushed back again. Its quite hard to arrange, but its possible. It
+  # shouldn't matter so long as flush stays idempotent.
   moved = []
 
   shuttles.addWatch.forward (s) ->
@@ -1230,8 +1233,8 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
   setBuffered: (shuttle, state) ->
     log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
     assert.strictEqual state.shuttle, shuttle
+    moved.push shuttle if shuttle.currentState == shuttle.prevState
     shuttle.currentState = state
-    moved.push shuttle
 
   setImmediate: (shuttle, state) ->
     # This is a bit roundabout, but it doesn't matter at the moment - this
@@ -1659,25 +1662,25 @@ Step = (modules) ->
       #log 'step() looking at shuttle', shuttle.id, 'force', force
 
       if (im = calcImpulse shuttle, fx)
-        shuttle.imXRem = shuttle.impulseX = im
+        shuttle.imXRem = shuttle.imX = im
         shuttlesX.push shuttle
       if (im = calcImpulse shuttle, fy)
-        shuttle.imYRem = shuttle.impulseY = im
+        shuttle.imYRem = shuttle.imY = im
         shuttlesY.push shuttle
 
-      log 'impulse', shuttle.impulseX, shuttle.impulseY
+      log 'impulse', shuttle.imX, shuttle.imY
 
     # We're going to sort the shuttles we want to move so that the simulation
     # is stable.
     #
     # Its super gross copying this code, but the other way would be to lookup
-    # by key 'impulseX' and 'impulseY' and that'd be slow (I think). Eh.
+    # by key 'imX' and 'imY' and that'd be slow (I think). Eh.
     shuttlesX.sort (a, b) ->
-      impulseDiff = abs(b.impulseX) - abs(a.impulseX)
+      impulseDiff = abs(b.imX) - abs(a.imX)
       if (impulseDiff) then return impulseDiff
       else return compareByPosition a, b
     shuttlesY.sort (a, b) ->
-      impulseDiff = abs(b.impulseY) - abs(a.impulseY)
+      impulseDiff = abs(b.imY) - abs(a.imY)
       if (impulseDiff) then return impulseDiff
       else return compareByPosition a, b
 
@@ -1842,7 +1845,7 @@ Step = (modules) ->
         break
 
       # Note > not >=.
-      if abs((sx = shuttlesX[ix]).impulseX) > abs((sy = shuttlesY[iy]).impulseY)
+      if abs((sx = shuttlesX[ix]).imX) > abs((sy = shuttlesY[iy]).imY)
         ix++; numMoved += tryMove sx, false
       else
         iy++; numMoved += tryMove sy, true
