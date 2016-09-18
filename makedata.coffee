@@ -16,7 +16,7 @@ process.stdin.on 'data', (data) ->
   input += data.toString 'utf8'
 
 process.stdin.on 'end', ->
-  grid = JSON.parse input
+  grid = JSON.parse input.split('\n')[0]
   delete grid.tw
   delete grid.th
 
@@ -29,6 +29,7 @@ process.stdin.on 'end', ->
     key = JSON.stringify jit.toJSON()
 
     console.log key
+    jit.printGrid process.stderr
 
     break if seenState.has key
     seenState.add key
