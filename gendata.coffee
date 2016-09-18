@@ -39,7 +39,8 @@ SIZE = 5
 
 for i in [1..10]
   mersenne.seed i
-  out = fs.createWriteStream "#{DIR}/#{i}.json"
+  filename = "#{DIR}/#{i}.json"
+  out = fs.createWriteStream filename
 
   for [1..100]
     grid = base:{}, shuttles:{}
@@ -66,6 +67,7 @@ for i in [1..10]
     out.write "#{JSON.stringify {initial:grid, steps}}\n"
 
   out.end()
+  console.log 'wrote', filename
 
 
 
