@@ -42,6 +42,7 @@ describe 'jit', ->
           assert.gridEquals expected, actual, i
 
   describe 'from gendata', ->
+    @timeout 10000
     if !fs.existsSync "#{__dirname}/gendata"
       console.warn 'Note: Skipping checking previously generated data - data not found. Use gendata to generate'
       return
