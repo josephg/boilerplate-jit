@@ -1,6 +1,6 @@
 {
   "name": "boilerplate-jit",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "description": "This is a realtime FRP compiler for [boilerplate](http://josephg.com/boilerplate)! Its fully operational - the version of boilerplate running live uses this code.",
   "main": "index.js",
   "dependencies": {
