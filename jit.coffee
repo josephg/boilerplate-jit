@@ -247,6 +247,13 @@ BlobFiller = (type, buffer) ->
       @imXRem = @imYRem = 0 # What gets actually consumed when the shuttle moves
       # Set of zones which, when deleted, will wake the shuttle
       @zoneDeps = new Set
+
+      # These sets are going to be *tiny* - everything in them needs to be
+      # physically touching the shuttle. An ideal representation would be a
+      # list that turns into a hashset if it grows beyond a certain size. Or
+      # just a list, and eat the O(n) time for some operations if a shuttle
+      # touches lots of other shuttles.
+      @shuttleDeps = new Set
       
 
     @anchor = {x, y} # leftmost cell in the top row
@@ -1207,7 +1214,6 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
 
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
-    if buffering then patch.delete s
     currentStates.delete s
     # This is important so in the shuttle collide code we don't double-collide
     # a shuttle (if we just delete it in patch, its currentState will revert
@@ -1305,6 +1311,9 @@ Zones = (shuttles, regions, currentStates) ->
 
   watch = new Watcher
 
+  buffering = false
+  buffer = []
+
   regions.watch.on (r) ->
     deleteZone zoneForRegion.get r
     zoneForRegion.delete r
@@ -1324,7 +1333,10 @@ Zones = (shuttles, regions, currentStates) ->
     log 'deleting zone', z._id
     z.used = false
     #zones.delete z
-    watch.signal z
+    if buffering
+      buffer.push z
+    else
+      watch.signal z
 
   makeZone = (r0) ->
     # Make a zone starting from the specified region.
@@ -1375,6 +1387,14 @@ Zones = (shuttles, regions, currentStates) ->
 
     #zones.add zone
     zone
+
+  startBuffer: ->
+    buffering = true
+  flushBuffer: ->
+    for z in buffer
+      watch.signal z
+    buffer.length = 0
+    buffering = false
 
   watch: watch
 
@@ -1432,8 +1452,8 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
   # woken up. If a shuttle gets woken up, we need to remove that list.
   shuttlesForZone = new Map # Zone -> Set of shuttles
   shuttlesForZone.default = -> new Set
-  shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
-  shuttleZoneDeps.default = -> new Set
+  #shuttleZoneDeps = new Map # Shuttle -> set of zones. For gc.
+  #shuttleZoneDeps.default = -> new Set
 
   shuttles.deleteWatch.on (s) ->
     log 's deletewatch', s
@@ -1453,59 +1473,80 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
 
   stateForce.watch.on (state) ->
     # The force on the shuttle was changed in some way.
-    wake state.shuttle, 'force changed'
+    wake state.shuttle, 'force recalculated' if state.shuttle.currentState is state
 
   # The shuttle moved. Wake that sucker for the next step too.
   currentStates.watch.on (shuttle) ->
-    wake shuttle, 'moved this step'
+    wake shuttle, 'shuttle state changed'
 
   shuttleStates.deleteWatch.on (state) ->
     log 'state deletewatch', state
     # We'll delete invalid states when the region is passable once again
     wake state.shuttle, 'state was deleted'
 
-  wake = (shuttle, reason) ->
-    if awake.has shuttle
-      log "waking #{shuttle.id} because #{reason}" if reason
-      return
+  clearDeps = (shuttle) ->
+    zones = shuttle.zoneDeps
+    zones.forEach (z) ->
+      shuttlesForZone.get(z)?.delete shuttle
+    zones.clear()
 
-    log "wake #{shuttle.id} because #{reason}" if reason
+    # This is unnecessary when called from wake().
+    shuttle.shuttleDeps.forEach (s2) -> s2.shuttleDeps.delete shuttle
 
-    log '+ awake shuttle', shuttle.id
-    if (deps = shuttleZoneDeps.get shuttle)
-      # Clear dependancies.
-      deps.forEach (z) ->
-        shuttlesForZone.get(z).delete shuttle
+    shuttle.shuttleDeps.clear()
 
-      shuttleZoneDeps.delete shuttle
-
+  wake = (shuttle, reason) -> # reason is just a string for logging.
     # This function is also called when the shuttle is deleted by both
     # stateForce.watch and currentStates.watch. And that'll happen before the
     # shuttle is actually deleted by shuttles.deleteWatch.
-    # In that case we still want to purge it from tracking sets, but we don't
-    # need to dignify the shuttle with dirtiness.
-    #if shuttle.used
+    #
+    # In those cases we'll wake it to purge the metadata then delete it from
+    # the awake set.
+    
+    if awake.has shuttle
+      log 'redundant wake', shuttle.id, reason if reason
+      return
+
+    log "waking #{shuttle.id} because #{reason}"
+
+    # Order of these next lines is important. Since the dependancy graph is
+    # bijective, we'll do a depth first search through the graph. Cycles
+    # mustn't ruin us.
     awake.add shuttle
+    shuttle.shuttleDeps.forEach (s2) -> wake s2, 'shuttle dependancy moved'
+    clearDeps shuttle
 
   data: awake
 
   # The shuttle is asleep - but it will wake if these zones change or blocking
   # shuttles move.
-  setAsleepDeps: (shuttle, deps) ->
-    actuallyAsleep = true
-    deps.forEach (z) ->
-      actuallyAsleep = false if !z.used
-
-    if !actuallyAsleep
-      log "NOT SNOOZING #{shuttle.id} - zones changed"
-      return
+  sleep: (shuttle) ->
+    return if !awake.has shuttle
 
     # An awake shuttle didn't move. Put it to sleep.
     awake.delete shuttle
 
-    deps.forEach (z) ->
+    zones = shuttle.zoneDeps
+    actuallyAsleep = true
+    zones.forEach (z) -> if !z.used
+      actuallyAsleep = false
+
+    #if !actuallyAsleep
+      # This is kind of awful. The problem is that during step() we calculate
+      # new forces. That in turn calculates new shuttle states, which
+      # calculates new groups, regions and finally zones. So shuttles sometimes
+      # need to be immediately woken up again because their environment was
+      # ripped apart.
+      #
+      # Thankfully it'll only happen during the warmup. We'll sleep the shuttle
+      # then immediately wake it again to make sure all the metadata is
+      # restored correctly.
+      #log "NOT SNOOZING #{shuttle.id} - zones changed"
+      #wake shuttle, 'zones already changed under the shuttle'
+      #return
+
+    zones.forEach (z) ->
       shuttlesForZone.getDef(z).add shuttle
-    shuttleZoneDeps.set shuttle, deps
 
     log 'setAsleepDeps', shuttle.id
 
@@ -1513,28 +1554,35 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     shuttles.flush()
     awake.forEach fn
 
-  check: (invasive) ->
+  isAwake: (shuttle) -> awake.has shuttle
+
+  check: ->
     # Awake shuttles aren't listed in shuttle zone deps.
     awake.forEach (s) ->
-      assert !shuttleZoneDeps.has s
+      assert.strictEqual s.zoneDeps.size, 0
+      assert.strictEqual s.shuttleDeps.size, 0
 
     # All zones we're listening on should be used
     shuttlesForZone.forEach (shuttles, zone) ->
       assert zone.used
-      # And shuttleZoneDeps and shuttlesForZone should be a bijection.
+      # And shuttle.zoneDeps and shuttlesForZone should be a bijection.
       shuttles.forEach (s) ->
+        assert s.used
         assert !awake.has(s)
-        assert shuttleZoneDeps.get(s).has zone
+        assert s.zoneDeps.has zone
 
-    shuttleZoneDeps.forEach (zones, s) ->
-      zones.forEach (z) ->
+    shuttles.forEach (s) ->
+      s.zoneDeps.forEach (z) ->
         assert shuttlesForZone.get(z).has s
+      s.shuttleDeps.forEach (s2) ->
+        assert s2.shuttleDeps.has s
 
   checkEmpty: ->
+    assert.strictEqual awake.size, 0
 
   stats: ->
     console.log 'shuttlesForZone.size:', shuttlesForZone.size
-    console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
+    #console.log 'shuttleZoneDeps.size:', shuttleZoneDeps.size
 
 ShuttleOverlap = (shuttleStates, shuttleGrid) ->
   # Pairs of states in different shuttles which would overlap
@@ -1557,6 +1605,8 @@ ShuttleOverlap = (shuttleStates, shuttleGrid) ->
 
 
 Step = (modules) ->
+  #logg = debug 'step'
+
   {
     zones,
     shuttles,
@@ -1640,54 +1690,10 @@ Step = (modules) ->
         # first, and behaviour is better so I'm keeping it for now.
         zone = zones.makeZoneUnderShuttle blockingShuttle
 
-      #shuttle.zoneDeps.add zone
+      shuttle.zoneDeps.add zone
 
     return impulse
 
-
-  calcPressure = ->
-    log 'step 1) calculating pressure'
-
-    # Part 1: Calculate the impulse on all shuttles.
-    #shuttles.forEach (shuttle) ->
-    awakeShuttles.forEach (shuttle) ->
-      log 'step() looking at shuttle', shuttle.id
-      Jit.stats.checks++
-
-      return if shuttle.held # Manually set from the UI.
-
-      # Consider moving the shuttle.
-      assert shuttle.used
-      force = stateForce.get shuttle.currentState
-      {x:fx, y:fy} = force
-      #log 'step() looking at shuttle', shuttle.id, 'force', force
-
-      if (im = calcImpulse shuttle, fx)
-        shuttle.imXRem = shuttle.imX = im
-        shuttlesX.push shuttle
-      if (im = calcImpulse shuttle, fy)
-        shuttle.imYRem = shuttle.imY = im
-        shuttlesY.push shuttle
-
-      log 'impulse', shuttle.imX, shuttle.imY
-
-    # We're going to sort the shuttles we want to move so that the simulation
-    # is stable.
-    #
-    # Its super gross copying this code, but the other way would be to lookup
-    # by key 'imX' and 'imY' and that'd be slow (I think). Eh.
-    shuttlesX.sort (a, b) ->
-      impulseDiff = abs(b.imX) - abs(a.imX)
-      if (impulseDiff) then return impulseDiff
-      else return compareByPosition a, b
-    shuttlesY.sort (a, b) ->
-      impulseDiff = abs(b.imY) - abs(a.imY)
-      if (impulseDiff) then return impulseDiff
-      else return compareByPosition a, b
-
-    return !!(shuttlesX.length + shuttlesY.length)
-
-  
 
   tryMove = (shuttle, isTop) ->
     newTag = if isTop then tag else -tag
@@ -1786,11 +1792,18 @@ Step = (modules) ->
         shuttleList.sort compareByPosition if needSort
         needSort = false
 
-        # TODO: Record these shuttles as dependancies.
         for s2 in shuttleList
           im2 = -mul * if isTop then s2.imYRem else s2.imXRem
           if im2 > 0
             take = Math.min im, im2
+            assert take > 0
+
+            assert awakeShuttles.isAwake s2
+            # We're stealing some force from this shuttle. If either of us
+            # doesn't move, its because of this moment.
+            shuttle.shuttleDeps.add s2
+            s2.shuttleDeps.add shuttle
+
             im2 -= take; im -= take
             if isTop then s2.imYRem = -im2*mul else s2.imXRem = -im2*mul
             break if im is 0
@@ -1802,6 +1815,9 @@ Step = (modules) ->
         for s2 in shuttleList
           im2 = -mul * if isTop then s2.imYRem else s2.imXRem
           if im2 > 0
+            assert awakeShuttles.isAwake s2
+            shuttle.shuttleDeps.add s2
+            s2.shuttleDeps.add shuttle
             if isTop then s2.imYRem = 0 else s2.imXRem = 0
 
       break if im is 0
@@ -1837,9 +1853,58 @@ Step = (modules) ->
     return moved
 
 
-  update = ->
+  # Step the world!
+  # returns true if something moves.
+  return step = ->
+    tag++
+    log "************** STEP #{tag} **************"
+    log '** phase 1) calculating pressure ***'
+
+    zones.startBuffer()
+    # Part 1: Calculate the impulse on all shuttles.
+    #shuttles.forEach (shuttle) ->
+    awakeShuttles.forEach (shuttle) ->
+      assert.equal shuttle.zoneDeps.size, 0
+      assert.equal shuttle.shuttleDeps.size, 0
+
+      log 'step() looking at shuttle', shuttle.id
+      Jit.stats.checks++
+
+      return if shuttle.held # Manually set from the UI.
+
+      # Consider moving the shuttle.
+      assert shuttle.used
+      force = stateForce.get shuttle.currentState
+      {x:fx, y:fy} = force
+      #log 'step() looking at shuttle', shuttle.id, 'force', force
+
+      if (im = calcImpulse shuttle, fx)
+        shuttle.imXRem = shuttle.imX = im
+        shuttlesX.push shuttle
+      if (im = calcImpulse shuttle, fy)
+        shuttle.imYRem = shuttle.imY = im
+        shuttlesY.push shuttle
+
+      log 'impulse', shuttle.imX, shuttle.imY
+
+    # We're going to sort the shuttles we want to move so that the simulation
+    # is stable.
+    #
+    # Its super gross copying this code, but the other way would be to lookup
+    # by key 'imX' and 'imY' and that'd be slow (I think). Eh.
+    shuttlesX.sort (a, b) ->
+      impulseDiff = abs(b.imX) - abs(a.imX)
+      if (impulseDiff) then return impulseDiff
+      else return compareByPosition a, b
+    shuttlesY.sort (a, b) ->
+      impulseDiff = abs(b.imY) - abs(a.imY)
+      if (impulseDiff) then return impulseDiff
+      else return compareByPosition a, b
+
+
     # Part 2: Try and move all the shuttles.
-    log 'step 2) update - moving shuttles', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
+    log '***** phase 2) moving shuttles *****'
+    log 'Shuttles to move: ', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
 
     numMoved = 0
 
@@ -1859,30 +1924,39 @@ Step = (modules) ->
         ix++; numMoved += tryMove sx, false
       else
         iy++; numMoved += tryMove sy, true
-
-        #Jit.stats.moves++
     
     # Actually forward signals based on shuttles that moved, to kill zones and
-    # figure out the new set of dirty states for the next step.
-    currentStates.flushAll()
+    # figure out the new set of dirty states for the next step. Note that this
+    # *needs* to happen after the shuttles are slept, so they can be re-awoken
+    # if a zone they depend on has been bumped.
 
-    # TODO: Deps. Here?
+    log '**** phase 3) cleanup ****'
+
+    # Sleep all the shuttles that haven't moved. Note that this isn't perfect -
+    # if a shuttle moves then gets pushed back to its original position, it'll
+    # stay awake. Its a pretty rare case and everything is simpler that way.
+    awakeShuttles.forEach (shuttle) ->
+      if abs(shuttle.stepTag) == tag
+        Jit.stats.moves++
+        log 'shuttle', shuttle.id, 'still awake - ', shuttle.stepTag
+        # The shuttle will stay awake. Clear its dependancies.
+        shuttle.zoneDeps.clear()
+        shuttle.shuttleDeps.forEach (s2) -> s2.shuttleDeps.delete shuttle
+        shuttle.shuttleDeps.clear()
+      else
+        log 'sleeping shuttle', shuttle.id, Array.from(shuttle.zoneDeps).map((z) -> z._id)
+        awakeShuttles.sleep shuttle
+
+
+    currentStates.flushAll()
+    zones.flushBuffer()
+
 
     log 'moved', numMoved
     shuttlesX.length = shuttlesY.length = 0
     return !!numMoved
+ 
 
-
-
-    # The shuttle didn't move.
-    #log '----> shuttle', shuttle.id, 'did not move. Zone deps:', deps
-    #awakeShuttles.setAsleepDeps shuttle, deps
-    #log 'deps', deps
-
-  return -> # returns true if something moves.
-    tag++
-    log "------------ STEP #{tag} ------------"
-    #shuttles.forEach (s) -> console.log(s.blockedBy)
     calcPressure()
     return update()
 
@@ -1965,7 +2039,9 @@ module.exports = Jit = (rawGrid) ->
     if !overlap
       currentStates.setImmediate shuttle, state
 
-  step: step
+  step: ->
+    result = step()
+    return result
 
   check: (invasive) ->
     m.check?(invasive) for k, m of modules
@@ -2050,8 +2126,11 @@ parseFile = exports.parseFile = (filename, opts) ->
 
   for s in [1..10]
     moved = jit.step()
-    console.log 'Step', s
+    console.log 'Post step', s
     jit.printGrid()
+
+    console.log '# Awake shuttles:', Array.from(jit.modules.awakeShuttles.data).map((s) -> s.id)
+    console.log()
 
     if !moved # If we're stuck make sure its for real.
       log.quiet = true
@@ -2062,7 +2141,6 @@ parseFile = exports.parseFile = (filename, opts) ->
       console.log '-> World stable.'
       break
 
-    console.log '# Awake shuttles:', jit.modules.awakeShuttles.data.size
     #jit.modules.shuttles.forEach (s) =>
     #  if !jit.modules.awakeShuttles.data.has s
     #    console.log 'b', s.id, s.blockedX?.id, s.blockedY?.id
@@ -2076,3 +2154,4 @@ if require.main == module
   log.quiet = process.argv[3] != '-v'
   parseFile filename
   console.log Jit.stats
+  console.log "(#{Math.floor(100 * Jit.stats.moves / Jit.stats.checks)}% efficiency)"
