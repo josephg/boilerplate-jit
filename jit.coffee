@@ -1286,7 +1286,7 @@ Zones = (shuttles, regions, currentStates) ->
 
   # For garbage collection. If the state of any of these shuttles changes, the
   # zone must be destroyed.
-  zonesDependingOnShuttle = new WeakMap # shuttle -> set of zones
+  zonesDependingOnShuttle = new Map # shuttle -> set of zones
   zonesDependingOnShuttle.default = -> new Set
 
   watch = new Watcher
@@ -1304,6 +1304,7 @@ Zones = (shuttles, regions, currentStates) ->
     # zone kicking around assuming we'll replace it soon anyway.
     zonesDependingOnShuttle.get(shuttle)?.forEach (zone) ->
       deleteZone zone
+    zonesDependingOnShuttle.delete shuttle
 
   shuttles.deleteWatch.on deleteZonesWithShuttle
   currentStates.watch.on deleteZonesWithShuttle
@@ -1319,6 +1320,9 @@ Zones = (shuttles, regions, currentStates) ->
       watch.signal z
 
   makeZone = (r0) ->
+    # NOTE: This function is the single most expensive function in the current
+    # codebase.
+
     # Make a zone starting from the specified region.
     zone =
       _id: makeId() # For debugging
@@ -1978,7 +1982,7 @@ module.exports = Jit = (rawGrid) ->
 
   setGrid = (rawGrid) -> util.deserialize rawGrid, no, set
 
-  setGrid rawGrid
+  setGrid rawGrid if rawGrid
 
 
 
