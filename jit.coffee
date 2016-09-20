@@ -1496,7 +1496,9 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     # bijective, we'll do a depth first search through the graph. Cycles
     # mustn't ruin us.
     awake.add shuttle
-    shuttle.shuttleDeps.forEach (s2) -> wake s2, 'shuttle dependancy moved'
+    shuttle.shuttleDeps.forEach (s2) ->
+      log '-> depends on', s2.id
+      wake s2, 'shuttle dependancy moved'
     clearDeps shuttle
 
   data: awake
@@ -1749,6 +1751,10 @@ Step = (modules) ->
         if !nextState #|| nextState.stepTag == -newTag
           log 'shuttle hit wall in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
           blocked = true
+          if s != shuttle
+            shuttle.shuttleDeps.add s
+            s.shuttleDeps.add shuttle # This should be redundant, but we need it for GC. :(
+
           break # damn I want a multilevel break here.
 
         shuttleOverlap.forEach nextState, (state2, s2) ->
@@ -1784,7 +1790,7 @@ Step = (modules) ->
         shuttleList.sort compareByPosition if needSort
         needSort = false
 
-        for s2 in shuttleList
+        for s2 in shuttleList when s2 != shuttle
           im2 = -mul * if isTop then s2.imYRem else s2.imXRem
           if im2 > 0
             take = Math.min im, im2
@@ -1804,7 +1810,7 @@ Step = (modules) ->
         # Crush all resistance!
         log 'Crushing resistance force of', oppositingForce
         im -= oppositingForce
-        for s2 in shuttleList
+        for s2 in shuttleList when s2 != shuttle
           im2 = -mul * if isTop then s2.imYRem else s2.imXRem
           if im2 > 0
             assert awakeShuttles.isAwake s2
