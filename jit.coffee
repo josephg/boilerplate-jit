@@ -1375,8 +1375,7 @@ Zones = (shuttles, regions, currentStates) ->
   startBuffer: ->
     buffering = true
   flushBuffer: ->
-    for z in buffer
-      watch.signal z
+    watch.signal z for z in buffer
     buffer.length = 0
     buffering = false
 
@@ -1587,6 +1586,11 @@ ShuttleOverlap = (shuttleStates, shuttleGrid) ->
     overlappingStates.getAll(state1)?.forEach (state2) ->
       fn state2, state2.shuttle # if state2.shuttle.immState is state2
 
+  willOverlap: (state1) ->
+    overlap = no
+    @forEach state1, (state2, s2) ->
+      overlap = yes if s2.currentState is state2
+    return overlap
 
 Step = (modules) ->
   #logg = debug 'step'
@@ -1919,7 +1923,7 @@ Step = (modules) ->
     # if a shuttle moves then gets pushed back to its original position, it'll
     # stay awake. Its a pretty rare case and everything is simpler that way.
     awakeShuttles.forEach (shuttle) ->
-      if abs(shuttle.stepTag) == tag
+      if abs(shuttle.stepTag) == tag or shuttle.held
         Jit.stats.moves++
         log 'shuttle', shuttle.id, 'still awake - ', shuttle.stepTag
         # The shuttle will stay awake. Clear its dependancies.
