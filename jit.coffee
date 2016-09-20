@@ -1725,6 +1725,10 @@ Step = (modules) ->
 
       # 1. Gather all the shuttles that are about to be pushed.
       oppositingForce = 0
+
+      # Treating shuttleList as a queue that keeps its contents - we're going
+      # to append to the end of it and read from the start to find everything
+      # that this shuttle needs to push.
       i = 0
       while i < shuttleList.length
         s = shuttleList[i]
@@ -1905,11 +1909,6 @@ Step = (modules) ->
       else
         iy++; numMoved += tryMove sy, true
     
-    # Actually forward signals based on shuttles that moved, to kill zones and
-    # figure out the new set of dirty states for the next step. Note that this
-    # *needs* to happen after the shuttles are slept, so they can be re-awoken
-    # if a zone they depend on has been bumped.
-
     log '**** phase 3) cleanup ****'
 
     # Sleep all the shuttles that haven't moved. Note that this isn't perfect -
@@ -1927,6 +1926,9 @@ Step = (modules) ->
         log 'sleeping shuttle', shuttle.id, Array.from(shuttle.zoneDeps).map((z) -> z._id)
         awakeShuttles.sleep shuttle
 
+    # Actually kill zones and figure out the new set of dirty states for the
+    # next step. Note that this *needs* to happen after the shuttles are slept,
+    # so they can be re-awoken if a zone they depend on has been bumped.
     zones.flushBuffer()
 
     log 'moved', numMoved
