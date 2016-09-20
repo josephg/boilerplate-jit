@@ -241,7 +241,7 @@ BlobFiller = (type, buffer) ->
       # and I _think_ it'll be faster to embed it directly in the shuttle than
       # look it up all the time during step(). Its kinda gross that this is
       # here though.
-      #@stepTag = 0 now state.stepTag
+      @stepTag = 0
       @prevState = null # Used by currentStates.flush to send the old state when it signals.
       @imX = @imY = 0 # Used to sort
       @imXRem = @imYRem = 0 # What gets actually consumed when the shuttle moves
@@ -1636,7 +1636,8 @@ Step = (modules) ->
         # after the adjacent shuttle *moves*. I could reuse the codepath for
         # waking a shuttle when a pushing shuttle has its pressure changed, but
         # thats a bit over-eager. Mind you, those events will often happen
-        # together anyway so it might not be a big deal.
+        # together anyway so it might not be a big deal. But I wrote this code
+        # first, and behaviour is better so I'm keeping it for now.
         zone = zones.makeZoneUnderShuttle blockingShuttle
 
       #shuttle.zoneDeps.add zone
@@ -1690,8 +1691,8 @@ Step = (modules) ->
 
   tryMove = (shuttle, isTop) ->
     newTag = if isTop then tag else -tag
-    # The shuttle has moved in the orthogonal direction. Discard.
-    return false if shuttle.currentState.stepTag is -newTag
+    # The shuttle has moved in the orthogonal direction this step. Discard.
+    return false if shuttle.stepTag is -newTag
 
     moved = no
     im = if isTop then shuttle.imYRem else shuttle.imXRem
@@ -1707,6 +1708,7 @@ Step = (modules) ->
 
     log 'tryMove shuttle', shuttle.id, util.DN[dir], im
 
+    # TODO: Make this null when there's no shuttle as an optimization.
     shuttleList = [shuttle] # Kept sorted because iteration order is important.
     needSort = false
     # TODO: Optimise so the normal case (only one shuttle) doesn't need this allocation.
@@ -1744,20 +1746,27 @@ Step = (modules) ->
         # The next state the shuttle will be in if it moves
         nextState = shuttleStates.getStateNear s.currentState, dir
 
-        # 1. If a shuttle has hit a wall, stop.
-        if !nextState || nextState.stepTag == -newTag
-          log 'no state avaliable in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
+        # 1. If a shuttle has hit a wall, a shadow, or a shuttle that can't
+        # move then stop.
+        if !nextState #|| nextState.stepTag == -newTag
+          log 'shuttle hit wall in dir', util.DN[dir], 'from state', s.currentState.dx, s.currentState.dy
           blocked = true
           break # damn I want a multilevel break here.
 
         shuttleOverlap.forEach nextState, (state2, s2) ->
-          if state2.stepTag == -newTag
-            log 'Blocked by shuttle'
-            blocked = true
-            return
+          if state2.stepTag == -newTag # Hit a shadow
+            log 'Blocked by shadow'
+            return blocked = true
 
-          # We've hit another shuttle.
-          if s2.currentState is state2 and !shuttleGlob.has s2
+          return if s2.currentState != state2 # Shuttle not actually here.
+
+          # hit a shuttle that has already moved orthogonally.
+          if s2.stepTag == -newTag
+            log 'blocked by shuttle'
+            return blocked = true
+
+          # We've hit another shuttle that we can push.
+          if !shuttleGlob.has s2
             shuttleGlob.add s2
             shuttleList.push s2
             needSort = true
@@ -1804,9 +1813,10 @@ Step = (modules) ->
         nextState = shuttleStates.getStateNear s2.currentState, dir
         assert nextState
 
-        # We have to tag both places so we both leave a shadow and can't be moved ourselves now.
+        # Tag the shuttle as having moved
+        s2.stepTag = newTag
+        # Tag the old state as being impassable from ortho directions
         s2.currentState.stepTag = newTag
-        nextState.stepTag = newTag
 
         log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
         
