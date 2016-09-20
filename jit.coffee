@@ -46,12 +46,12 @@ shuttleConnects = (sv, dir) -> !!(sv & (1<<dir))
 compareByPosition = (a, b) ->
   # Could cache the anchor for each shuttle state, but I don't think it
   # would buy us anything.
-  ay = a.anchor.y + a.prevState.dy
-  _by = b.anchor.y + b.prevState.dy # 'by' is a coffeescript keyword
+  ay = a.anchor.y + a.currentState.dy
+  _by = b.anchor.y + b.currentState.dy # 'by' is a coffeescript keyword
   return ay - _by if ay != _by
 
-  ax = a.anchor.x + a.prevState.dx
-  bx = b.anchor.x + b.prevState.dx
+  ax = a.anchor.x + a.currentState.dx
+  bx = b.anchor.x + b.currentState.dx
   return ax - bx
 
 
@@ -242,7 +242,6 @@ BlobFiller = (type, buffer) ->
       # look it up all the time during step(). Its kinda gross that this is
       # here though.
       @stepTag = 0
-      @prevState = null # Used by currentStates.flush to send the old state when it signals.
       @imX = @imY = 0 # Used to sort
       @imXRem = @imYRem = 0 # What gets actually consumed when the shuttle moves
       # Set of zones which, when deleted, will wake the shuttle
@@ -463,7 +462,6 @@ ShuttleStates = (baseGrid, shuttles) ->
 
   collapse: (shuttle) ->
     log 'collapsing', shuttle
-    assert.equal shuttle.currentState, shuttle.prevState # Make sure the shuttle isn't in motion
 
     saved = shuttle.currentState
     # Delete all states except for the current state
@@ -552,7 +550,7 @@ ShuttleGrid = (shuttleStates) ->
     # Get the shuttle currently at (x, y), or null.
     shuttle = null
     stateGrid.get(x, y)?.forEach (state) ->
-      if state.shuttle.prevState is state
+      if state.shuttle.currentState is state
         shuttle = state.shuttle
     return shuttle
 
@@ -560,7 +558,7 @@ ShuttleGrid = (shuttleStates) ->
     # Get the grid cell value at x, y. This is a lot of work - if you want to
     # draw a lot of shuttles or something, don't use this.
     return unless (shuttle = @getShuttle x, y)
-    {dx, dy} = shuttle.prevState
+    {dx, dy} = shuttle.currentState
     return shuttle.points.get x-dx, y-dy
 
   check: ->
@@ -1201,16 +1199,11 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
 
   watch = new Watcher
 
-  # Its possible this will have duplicates if a shuttle moves one way, then is
-  # pushed back again. Its quite hard to arrange, but its possible. It
-  # shouldn't matter so long as flush stays idempotent.
-  moved = []
-
   shuttles.addWatch.forward (s) ->
     state = shuttleStates.getInitialState s
-    s.prevState = s.currentState = state
+    s.currentState = state
     currentStates.set s, state
-    watch.signal s, null, state # prevState null in the signal.
+    watch.signal s, null, state # prev state null in the signal.
 
   shuttles.deleteWatch.on (s) ->
     # .. I'll try to clean up if you edit the grid mid-step(), but ... don't.
@@ -1222,31 +1215,20 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     # If you care about the current state going away, watch shuttles.deleteWatch.
 
   _flush = (shuttle) ->
-    return if shuttle.currentState == shuttle.prevState
-    state = shuttle.currentState
-
-    currentStates.set shuttle, state
-    watch.signal shuttle, shuttle.prevState, state
-    shuttle.prevState = state
 
   map: currentStates
   watch: watch
 
-  flushAll: ->
-    _flush s for s in moved
-    moved.length = 0
-
-  setBuffered: (shuttle, state) ->
-    log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
+  set: (shuttle, state) ->
     assert.strictEqual state.shuttle, shuttle
-    moved.push shuttle if shuttle.currentState == shuttle.prevState
-    shuttle.currentState = state
 
-  setImmediate: (shuttle, state) ->
-    # This is a bit roundabout, but it doesn't matter at the moment - this
-    # isn't a hot path.
-    @setBuffered shuttle, state
-    @flushAll()
+    return if shuttle.currentState == state
+    log "moving #{shuttle.id} to #{state.dx},#{state.dy}"
+
+    prevState = shuttle.currentState
+    shuttle.currentState = state
+    currentStates.set shuttle, state
+    watch.signal shuttle, prevState, state
 
 
 CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) ->
@@ -1269,8 +1251,6 @@ CollapseDetector = (grid, shuttleBuffer, shuttles, shuttleStates, shuttleGrid) -
     else if oldPassable and !newPassable
       shuttleGrid.stateGrid.get(x, y)?.forEach (state) ->
         shuttle = state.shuttle
-
-        assert.strictEqual shuttle.currentState, shuttle.prevState # Can't be in motion.
 
         # So, two strategies for dealing with this.
         if shuttle.currentState is state
@@ -1836,7 +1816,7 @@ Step = (modules) ->
 
         log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
         
-        currentStates.setBuffered s2, nextState
+        currentStates.set s2, nextState
         moved = yes
         if isTop then s2.imXRem = 0 else s2.imYRem = 0
 
@@ -1947,10 +1927,7 @@ Step = (modules) ->
         log 'sleeping shuttle', shuttle.id, Array.from(shuttle.zoneDeps).map((z) -> z._id)
         awakeShuttles.sleep shuttle
 
-
-    currentStates.flushAll()
     zones.flushBuffer()
-
 
     log 'moved', numMoved
     shuttlesX.length = shuttlesY.length = 0
@@ -2037,7 +2014,7 @@ module.exports = Jit = (rawGrid) ->
       overlap = true if shuttle2.currentState is state2
     # TODO: push the pesky shuttles out of the way using the monster code in step.
     if !overlap
-      currentStates.setImmediate shuttle, state
+      currentStates.set shuttle, state
 
   step: ->
     result = step()
