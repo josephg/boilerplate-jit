@@ -1,7 +1,7 @@
 # This jit is designed as an ecosystem of signaling parts.
 Watcher = require './watch'
 {Map2, Map3, Set2, Set3, SetOfPairs} = require './collections2'
-{parseXY, fill, DIRS} = util = require './util'
+{DIRS} = util = require './util'
 log = require './log'
 assert = require 'assert'
 
@@ -168,7 +168,7 @@ ShuttleBuffer = ->
     else
       # Disconnect adjacent shuttle cells from this one
       oldV = buffer.get x, y
-      for {dx, dy},d in DIRS when shuttleConnects oldV, d
+      if oldV then for {dx, dy},d in DIRS when shuttleConnects oldV, d
         x2 = x+dx; y2 = y+dy
         v2 = buffer.get x2, y2
         d2 = util.oppositeDir d
@@ -181,6 +181,7 @@ ShuttleBuffer = ->
   watch: watch
   data: buffer
   pump: pump buffer
+
 
 # The code for finding & flood filling shuttles & engines is basically
 # identical. I'll reuse it, and switch according to which type of thing I'm
@@ -226,8 +227,9 @@ BlobFiller = (type, buffer) ->
     @points = new Map2
     # Edges around the entire shuttle
     @edges = new Set3
-    # Edges around v=shuttle tiles
+    @anchor = {x, y} # leftmost cell in the top row
     if type is 'shuttle'
+      # Edges around v=shuttle tiles
       @pushEdges = new Set3
       @numValidStates = 0
       @currentState = null
@@ -255,7 +257,6 @@ BlobFiller = (type, buffer) ->
       @shuttleDeps = new Set
       
 
-    @anchor = {x, y} # leftmost cell in the top row
 
     blobs.add this
 
@@ -275,7 +276,6 @@ BlobFiller = (type, buffer) ->
         x2 = x+dx; y2 = y+dy
         v2 = @points.get(x2, y2) || buffer.data.get(x2, y2)
 
-          #continue if type is 'shuttle' and 
         if v2 and ((type is 'shuttle' and shuttleConnects v, d) or
             (type is 'engine' and v2 == v))
 
@@ -345,17 +345,6 @@ BlobFiller = (type, buffer) ->
 # Super simple module to get the engine at an arbitrary grid cell (x, y).
 EngineGrid = (grid, engines) ->
   engineGrid = new Map2 # x,y -> engine
-
-  grid.beforeWatch.forward (x, y, oldv, v) ->
-    if oldv in ['positive', 'negative'] and (e = engineGrid.get x, y)
-      #log 'deleting engine at', x, y, e
-      engines.delete e
-
-    # Engines really don't care about anything else.
-    if v in ['positive', 'negative']
-      # Reap adjacent cells. This might be special for shuttles?
-      for {dx, dy} in DIRS when (e = engineGrid.get x+dx, y+dy)
-        engines.delete e
 
   engines.addWatch.forward (engine) ->
     engine.points.forEach (x, y, v) ->
@@ -597,7 +586,8 @@ FillKeys = (baseGrid, shuttleStates, shuttleGrid) ->
 
   calcKeyAt = (x, y) ->
     stateList = []
-    shuttleGrid.fillGrid.get(x, y)?.forEach (state) -> stateList.push state
+    shuttleGrid.fillGrid.get(x, y)?.forEach (state) ->
+      stateList.push state if state.valid
     stateList.sort (s1, s2) ->
       if s1.shuttle != s2.shuttle
         s1.shuttle.id - s2.shuttle.id
@@ -739,10 +729,10 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
       used: yes
       size: 0 # For debugging
       fillKey: key # We could just request this out of fillKeys, but its handy.
-      points: new Map3
+      points: new Map3 # x, y, c -> value
       edges: new Set3 # x, y, c
       shuttles: shuttles
-      shuttleKey: shuttles.map((s) -> "#{s.id}").join ' '
+      shuttleKey: shuttles.map((s) -> "#{s.id}").join ' ' # TODO: Is this stable?
       # Does the group *only* have engine cells? They clutter up my logs and make me mad!
       useless: true
       engines: new Set # Engines this group contains
@@ -833,7 +823,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
     groups.forEach (g) ->
       fn g if !g.useless
 
-  check: check = ->
+  check: ->
     groups.forEach (g) ->
       g.points.forEach (x, y, c) ->
         assert.equal groupGrid.get(x, y, c), g
@@ -1045,12 +1035,11 @@ Regions = (fillKeys, groups, groupConnections) ->
   # group -> set of shuttle states -> region
   regionsForGroup = new Map
   regionsForGroup.default = (g) -> new util.ShuttleStateMap g.shuttles
-    #shuttles = util.uniqueShuttlesInStates(fillKeys.getFilledStates g.fillKey)
 
   # This is needed for cleanup. Regions are destroyed when an adjacent group is
   # destroyed so if the group should now connect, we can take that into
   # account.
-  regionsTouchingGroup = new Map
+  regionsTouchingGroup = new Map # group -> set of regions.
   regionsTouchingGroup.default = -> new Set
 
   regions = new Set
@@ -1082,9 +1071,9 @@ Regions = (fillKeys, groups, groupConnections) ->
         regionsTouchingGroup.delete(group) if set.size is 0
     watch.signal region
 
-  Region = (group0, trimmedStates, shuttleStateMap) ->
-    assert regionsForGroup.getDef(group0).isDefinedFor shuttleStateMap
-
+  Region = (group0, trimmedStates, stateMap) ->
+    # TODO: Pretty weird this constructor is only invoked by makeRegion below.
+    # Hardly seems necessary to have two functions.
     shuttleKey = group0.shuttleKey
 
     @_id = makeId()
@@ -1095,7 +1084,7 @@ Regions = (fillKeys, groups, groupConnections) ->
     @edges = new Set # Set of adjacent groups
     @engines = new Set # Hoisted from groups
 
-    log @_id, ': createRegion from group', group0._id#, shuttleStateMap
+    log @_id, ': createRegion from group', group0._id#, stateMap
 
     # Most cells (and hence most groups) have an empty fill key - I should
     # totally be able to short circuit most of this, or just use the group in
@@ -1130,7 +1119,7 @@ Regions = (fillKeys, groups, groupConnections) ->
     log @_id, ': Made region with groups', @groups.map((g) -> {id:g._id, points:g.points})
     return
 
-  makeRegion = (group, shuttleStateMap) ->
+  makeRegion = (group, stateMap) ->
     # First we need to make sure the region is actually fillable given the
     # current set of shuttle states.
 
@@ -1141,7 +1130,7 @@ Regions = (fillKeys, groups, groupConnections) ->
     invalid = no
     filledStates = fillKeys.getFilledStates group.fillKey
     group.shuttles.forEach (s) ->
-      state = shuttleStateMap.get s
+      state = stateMap.get s
       trimmedStates.set s, state
       invalid = yes if filledStates.has state
 
@@ -1149,26 +1138,24 @@ Regions = (fillKeys, groups, groupConnections) ->
     # fill the group.
     if invalid
       # Null = this group is filled here; no region is possible.
-      #regionsForGroup.getDef(group0).set shuttleStateMap, null
-      #log '-> invalid'
-      regionsForGroup.getDef(group).set shuttleStateMap, null
+      regionsForGroup.getDef(group).set stateMap, null
       return null
 
-    return new Region group, trimmedStates, shuttleStateMap
+    assert regionsForGroup.getDef(group).isDefinedFor stateMap
+    return new Region group, trimmedStates, stateMap
 
   #dependancies: (group) -> regionsForGroup.getDef(group).shuttles
 
   watch: watch
 
-  get: (group, shuttleStateMap) ->
-    # The existance of this function taking in shuttleStateMap is the only
+  get: (group, stateMap) ->
+    # The existance of this function taking in stateMap is the only
     # reason we maintain the state map. ... .... :/
     map = regionsForGroup.getDef group
-    region = map.get shuttleStateMap
-    region = makeRegion group, shuttleStateMap if region is undefined
+    region = map.get stateMap
+    region = makeRegion group, stateMap if region is undefined
 
-    return null if region is null # The group is filled right now.
-
+    # This sometimes returns null (if the region is filled).
     return region
 
   check: ->
@@ -1213,8 +1200,6 @@ CurrentStates = (shuttles, stateForce, shuttleStates) ->
     # and it might collide with something else).
     s.currentState = null
     # If you care about the current state going away, watch shuttles.deleteWatch.
-
-  _flush = (shuttle) ->
 
   map: currentStates
   watch: watch
@@ -1512,23 +1497,6 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     awake.delete shuttle
 
     zones = shuttle.zoneDeps
-    actuallyAsleep = true
-    zones.forEach (z) -> if !z.used
-      actuallyAsleep = false
-
-    #if !actuallyAsleep
-      # This is kind of awful. The problem is that during step() we calculate
-      # new forces. That in turn calculates new shuttle states, which
-      # calculates new groups, regions and finally zones. So shuttles sometimes
-      # need to be immediately woken up again because their environment was
-      # ripped apart.
-      #
-      # Thankfully it'll only happen during the warmup. We'll sleep the shuttle
-      # then immediately wake it again to make sure all the metadata is
-      # restored correctly.
-      #log "NOT SNOOZING #{shuttle.id} - zones changed"
-      #wake shuttle, 'zones already changed under the shuttle'
-      #return
 
     zones.forEach (z) ->
       shuttlesForZone.getDef(z).add shuttle
@@ -1599,7 +1567,6 @@ Step = (modules) ->
 
   {
     zones,
-    shuttles,
     awakeShuttles,
     shuttleStates,
     stateForce,
@@ -1948,10 +1915,6 @@ Step = (modules) ->
     log 'moved', numMoved
     shuttlesX.length = shuttlesY.length = 0
     return !!numMoved
- 
-
-    calcPressure()
-    return update()
 
 
 module.exports = Jit = (rawGrid) ->

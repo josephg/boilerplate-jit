@@ -204,6 +204,11 @@ exports.ShuttleStateMap = class ShuttleStateMap
     # First, find which shuttles are in play here. Its important that we iterate
     # through the shuttles in a stable order, so we'll throw everything into
     # lists.
+    #
+    # This is kind of awful - the data structure uses state ids to index into
+    # sparse lists. Because ids will grow unbounded as the simulation
+    # continues, this might result in runaway momory usage depending on how
+    # sparse lists are implemented in JS. TODO: Benchmark moving to maps.
     @shuttles = []
 
     shuttleSet.forEach (s) =>
@@ -293,13 +298,12 @@ chars =
   thinsolid: -> chalk.bgWhite.grey 'x'
   shuttle: (id) -> chalk.magenta id || 'S'
   thinshuttle: (id) -> chalk.magenta.bgWhite id || 's'
-  bridge: -> chalk.bgBlue 'B'
-  thinbridge: -> chalk.blue 'b'
+  bridge: -> chalk.bgBlue 'b'
   ribbon: -> chalk.yellow 'r'
   ribbonbridge: -> chalk.yellow.bgBlue 'r'
 
 
-exports.printCustomGrid = printCustomGrid = ({top, left, bottom, right}, getFn, getIdFn = (->), stream = process.stdout) ->
+exports.printCustomGrid = printCustomGrid = ({top, right, bottom, left}, getFn, getIdFn = (->), stream = process.stdout) ->
   top ||= 0; left ||= 0
 
   header = chalk.bold
