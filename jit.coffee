@@ -346,6 +346,17 @@ BlobFiller = (type, buffer) ->
 EngineGrid = (grid, engines) ->
   engineGrid = new Map2 # x,y -> engine
 
+  grid.beforeWatch.forward (x, y, oldv, v) ->
+    if oldv in ['positive', 'negative'] and (e = engineGrid.get x, y)
+      #log 'deleting engine at', x, y, e
+      engines.delete e
+
+    # Engines really don't care about anything else.
+    if v in ['positive', 'negative']
+      # Reap adjacent cells. This might be special for shuttles?
+      for {dx, dy} in DIRS when (e = engineGrid.get x+dx, y+dy)
+        engines.delete e
+  
   engines.addWatch.forward (engine) ->
     engine.points.forEach (x, y, v) ->
       engineGrid.set x, y, engine
