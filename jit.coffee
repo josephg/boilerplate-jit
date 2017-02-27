@@ -1486,6 +1486,10 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
       wake s2, 'shuttle dependancy moved'
     clearDeps shuttle
 
+    # Not sure if this is the best way to do this, or if we should just hold
+    # the invariant.
+    shuttle.imX = shuttle.imY = shuttle.imXRem = shuttle.imYRem = 0
+
   data: awake
 
   # The shuttle is asleep - but it will wake if these zones change or blocking
