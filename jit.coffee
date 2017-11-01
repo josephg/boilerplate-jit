@@ -131,8 +131,8 @@ ShuttleBuffer = ->
   # in here is harder to figure out - we need semantic information about where
   # the shuttle is to both know when to delete it, and know where to put it. So
   # that happens somewhere else.
-  
-  # A grid of unrealised shuttle cells. Values are 
+
+  # A grid of unrealised shuttle cells. Values are
   buffer = new Map2
   watch = new Watcher # This is a beforeWatch
 
@@ -255,7 +255,7 @@ BlobFiller = (type, buffer) ->
       # just a list, and eat the O(n) time for some operations if a shuttle
       # touches lots of other shuttles.
       @shuttleDeps = new Set
-      
+
 
 
     blobs.add this
@@ -342,21 +342,23 @@ BlobFiller = (type, buffer) ->
               assert !shuttleConnects v, d
               assert b.pushEdges.has x, y, d if v & SHUTTLE
 
+isEngine = (v) -> v in ['positive', 'negative']
+
 # Super simple module to get the engine at an arbitrary grid cell (x, y).
 EngineGrid = (grid, engines) ->
   engineGrid = new Map2 # x,y -> engine
 
   grid.beforeWatch.forward (x, y, oldv, v) ->
-    if oldv in ['positive', 'negative'] and (e = engineGrid.get x, y)
+    if isEngine(oldv) and (e = engineGrid.get x, y)
       #log 'deleting engine at', x, y, e
       engines.delete e
 
     # Engines really don't care about anything else.
-    if v in ['positive', 'negative']
+    if isEngine(v)
       # Reap adjacent cells. This might be special for shuttles?
       for {dx, dy} in DIRS when (e = engineGrid.get x+dx, y+dy)
         engines.delete e
-  
+
   engines.addWatch.forward (engine) ->
     engine.points.forEach (x, y, v) ->
       engineGrid.set x, y, engine
@@ -755,7 +757,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
       #log 'fillCells', x, y, c, v
       return unless v # Optimization.
 
-      group.useless = no if v and v not in ['positive', 'negative']
+      group.useless = no if v and !isEngine v
       if fillKeys.getFillKey(x, y) != key
         #log "wrong fill key -> '#{fillKeys.getFillKey(x, y)}'", x, y, c
         group.edges.add x, y, c
@@ -772,7 +774,7 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
       assert pendingCells.has x, y, c
       pendingCells.delete x, y, c
 
-      if v in ['positive', 'negative']
+      if isEngine v
         e = engineGrid.get x, y
         group.engines.add e
         groupsWithEngine.getDef(e).add group
@@ -813,13 +815,12 @@ Groups = (baseGrid, engines, engineGrid, shuttleGrid, fillKeys) ->
     return unless v
     return if v in ['ribbon', 'ribbonbridge']
 
-    c = switch v
-      when 'positive', 'negative'
-        dir
-      when 'bridge'
-        dir % 2
-      else
-        0
+    c = if isEngine v
+      dir
+    else if v == 'bridge'
+      dir % 2
+    else
+      0
 
     @get x, y, c
 
@@ -970,7 +971,7 @@ GroupConnections = (groups) ->
   # So, here we track & report on connections between groups. Groups are either
   # complete or incomplete. Incomplete groups need to be regenerated if
   # requested, but they are useful for garbage collection.
- 
+
   # A group is always regenerated if a new group is drawn next to it.
 
   connections = new SetOfPairs # Map from group -> set of groups it touches
@@ -1481,7 +1482,7 @@ AwakeShuttles = (shuttles, shuttleStates, stateForce, currentStates, zones) ->
     #
     # In those cases we'll wake it to purge the metadata then delete it from
     # the awake set.
-    
+
     if awake.has shuttle
       log 'redundant wake', shuttle.id, reason if reason
       return
@@ -1815,7 +1816,7 @@ Step = (modules) ->
         s2.currentState.stepTag = newTag
 
         log 'Moving shuttle', s2.id, 'to state', nextState.dx, nextState.dy
-        
+
         currentStates.set s2, nextState
         moved = yes
         if isTop then s2.imXRem = 0 else s2.imYRem = 0
@@ -1904,7 +1905,7 @@ Step = (modules) ->
         ix++; numMoved += tryMove sx, false
       else
         iy++; numMoved += tryMove sy, true
-    
+
     log '**** phase 3) cleanup ****'
 
     # Sleep all the shuttles that haven't moved. Note that this isn't perfect -
