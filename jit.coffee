@@ -1868,6 +1868,10 @@ Step = (modules) ->
 
       log 'impulse', shuttle.imX, shuttle.imY
 
+
+    # Part 2: Try and move all the shuttles.
+    log '***** phase 2) moving shuttles *****'
+
     # We're going to sort the shuttles we want to move so that the simulation
     # is stable.
     #
@@ -1882,9 +1886,6 @@ Step = (modules) ->
       if (impulseDiff) then return impulseDiff
       else return compareByPosition a, b
 
-
-    # Part 2: Try and move all the shuttles.
-    log '***** phase 2) moving shuttles *****'
     log 'Shuttles to move: ', shuttlesX.map((s) -> s.id), shuttlesY.map((s) -> s.id)
 
     numMoved = 0
