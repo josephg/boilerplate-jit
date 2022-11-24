@@ -18,8 +18,8 @@ Set::map = (fn) ->
 exports.Map2 = class Map2 extends require 'map2'
   constructor: (data) ->
     if typeof data is 'function'
-      @default = data
       super()
+      @default = data
     else
       super data
 

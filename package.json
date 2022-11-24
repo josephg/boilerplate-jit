@@ -9,7 +9,7 @@
     "set2": "^1.0.0"
   },
   "devDependencies": {
-    "coffee-script": "^1.10.0",
+    "coffeescript": "^2.7.0",
     "mersenne": "^0.0.3",
     "mocha": "^3.0.2"
   },
